@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  verify:
+    name: Typecheck, lint, and isolation suite
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Applies every migration from scratch. A migration that only works against an
+      # already-migrated database fails here rather than in production.
+      - name: Start Supabase
+        run: npx supabase start
+
+      - name: Write environment
+        run: npm run db:env
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      # The generated types are committed, so a schema change that skipped regeneration shows up
+      # as a diff rather than as a type error months later.
+      - name: Check generated types are current
+        run: |
+          npm run db:types
+          git diff --exit-code src/types/database.ts \
+            || (echo "::error::src/types/database.ts is stale. Run: npm run db:types" && exit 1)
+
+      # Includes the cross-tenant sweep and the schema guards. A table added without RLS, a
+      # SECURITY DEFINER function without a pinned search_path, or a policy that leaks across
+      # organizations fails the build.
+      - name: Test
+        run: npm test
+
+      - name: Stop Supabase
+        if: always()
+        run: npx supabase stop --no-backup
