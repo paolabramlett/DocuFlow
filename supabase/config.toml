@@ -397,6 +397,12 @@ authorization_url_path = "/oauth/consent"
 # Allow dynamic client registration
 allow_dynamic_registration = false
 
+# The reminder drainer. verify_jwt stays on — the platform requires a valid JWT to reach it — and
+# the function additionally enforces its own internal trigger secret (see the function source), so
+# an ordinary client with only an anon JWT still cannot invoke a drain.
+[functions.send-reminders]
+verify_jwt = true
+
 [edge_runtime]
 enabled = true
 # Supported request policies: `oneshot`, `per_worker`.
