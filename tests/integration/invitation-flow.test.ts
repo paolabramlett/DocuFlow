@@ -39,7 +39,7 @@ async function freshInvitation(label: string): Promise<Invitation> {
     {
       organizationId: world.organizationId,
       caseId: world.caseId,
-      clientId: world.clientId,
+      participantId: world.participantId,
       permission: 'upload',
     },
     world.staff.userId,
@@ -93,7 +93,7 @@ describe('invitation and OTP flow', () => {
           {
             organizationId: world.organizationId,
             caseId: world.caseId,
-            clientId: world.clientId,
+            participantId: world.participantId,
             permission: 'upload',
           },
           outsider.userId,

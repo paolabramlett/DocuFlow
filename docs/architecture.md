@@ -156,6 +156,24 @@ Consequences that must not be broken:
   itself confidential.
 - Documents belong to the Organization that collected them. There is no automatic reuse.
 
+## Participants and Stages
+
+A Case has **one or more Participants**. Each Participant links an Organization-owned Client to the Case with a descriptive role label (buyer, seller, notary, …) and may hold its own revocable grant. The same Client may be several Participants of one Case when the roles are genuinely distinct — there is deliberately no `(case_id, client_id)` unique constraint.
+
+**Grants attach to a Participant, not a `(client, case)` pair.** The base resolver is `app.granted_participant_ids(min_permission)`; `app.granted_case_ids` is redefined in terms of it (a Case is visible to a Client who holds an active grant on any of its Participants), so there is still one definition of an active grant.
+
+**Client authorization is per-Participant.** A Client sees and acts on only the Requirements assigned to the Participant it is granted on. A Requirement's `participant_id` is nullable: null means Case-level, **Staff-only** — never "shared with everyone." Sharing, if it ever exists, will be an explicit `audience` dimension, not an inference from null. This is the security-critical property of the model and is covered by `participant-isolation.test.ts`: within one Case, a Client on Participant A cannot read, detect, download, or write anything of Participant B.
+
+**Stages** are first-class ordered rows on both Blueprints (`blueprint_stages`) and Cases (`case_stages`). `create_case` deep-copies Blueprint Stages into Case Stages and maps each cloned Requirement (via an optional `stage_position` in the Blueprint definition) to the matching Case Stage. A Case works fine with a single default Stage.
+
+**Requirement supersession** (satisfied Requirements are replaced, not mutated): a material change archives the original with explicit `superseded_at` and `superseded_by_requirement_id`, distinct from a manual `archived` state, and creates a fresh outstanding successor. The original's Documents and Reviews stay linked to it. The DB guards the mechanics — a successor is always in the same Case (composite FK) and never the Requirement itself (check constraint). Cosmetic edits stay in place. The semantic decision (material vs cosmetic) lives in the service layer, which is the only thing that knows user intent.
+
+A Case may exist as a draft with no Participants, but the service layer gates it from issuing invitations or activating follow-up until at least one Participant has an assigned Requirement. There is no hidden default Participant.
+
+## Readiness
+
+`case_ready` is computed across the **whole** Case — every live Requirement, assigned and unassigned Staff-internal alike, excluding deleted and superseded — so a single Participant finishing does not complete the Case, and an outstanding Staff Requirement keeps it open. `participant_ready` (a single Participant's assigned Requirements all satisfied) is modelled conceptually but not emitted in the MVP. Reminders are the opposite scope: a Client is chased only for its **own** Participant's outstanding work; unassigned Requirements never chase a Client.
+
 ## Storage
 
 Objects live at:

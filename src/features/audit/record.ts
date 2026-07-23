@@ -10,6 +10,7 @@ export type AuditAction =
   | 'requirement.renamed'
   | 'requirement.deleted'
   | 'requirement.reordered'
+  | 'requirement.superseded'
   | 'grant.issued'
   | 'grant.otp_sent'
   | 'grant.otp_verified'

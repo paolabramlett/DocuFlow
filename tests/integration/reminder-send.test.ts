@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { adminClient } from '../helpers/clients';
-import { selectDueReminders } from '../helpers/db';
+import { queueDueReminders } from '../helpers/db';
 import {
   buildOrganizationWorld,
   grantVerifiedAccess,
@@ -47,7 +47,7 @@ const actionUrl = (grantId: string) => `https://app.docuflow.test/invite/${grant
 describe('reminder send path', () => {
   it('sends a queued reminder to the grant address and marks it sent', async () => {
     const world = await dueWorld('Send');
-    await selectDueReminders();
+    await queueDueReminders();
     const sender = recordingSender();
 
     const result = await drainReminderQueue(adminClient(), sender, actionUrl);
@@ -70,7 +70,7 @@ describe('reminder send path', () => {
 
   it('records a send as an audit event carrying no body or url', async () => {
     const world = await dueWorld('Audit');
-    await selectDueReminders();
+    await queueDueReminders();
     await drainReminderQueue(adminClient(), recordingSender(), actionUrl);
 
     const { data } = await world.staff.client
@@ -87,7 +87,7 @@ describe('reminder send path', () => {
 
   it('does not resend an already-sent delivery on a second drain', async () => {
     const world = await dueWorld('NoResend');
-    await selectDueReminders();
+    await queueDueReminders();
 
     const first = recordingSender();
     await drainReminderQueue(adminClient(), first, actionUrl);
@@ -101,7 +101,7 @@ describe('reminder send path', () => {
 
   it('marks a failed send failed, and retries it up to the bound', async () => {
     const world = await dueWorld('Retry');
-    await selectDueReminders();
+    await queueDueReminders();
 
     // Fail every attempt.
     for (let i = 0; i < MAX_SEND_ATTEMPTS; i += 1) {
@@ -126,7 +126,7 @@ describe('reminder send path', () => {
 
   it('recovers: a failed delivery sends on a later successful drain', async () => {
     const world = await dueWorld('Recover');
-    await selectDueReminders();
+    await queueDueReminders();
 
     await drainReminderQueue(adminClient(), failingSender(), actionUrl);
     const failed = await adminClient()

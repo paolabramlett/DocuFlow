@@ -21,9 +21,18 @@ export const addRequirementSchema = z.object({
   label: z.string().trim().min(1).max(300),
   instructions: z.string().trim().max(4000).optional(),
   position: z.number().int().min(0),
+  // Null/absent = Case-level, Staff-only (design.md D2).
+  participantId: z.string().uuid().optional(),
+  stageId: z.string().uuid().optional(),
   // Only `document` is accepted. The database refuses the other planned types too, so this is
   // the friendly rejection rather than the only one.
   type: z.literal('document').default('document'),
+});
+
+export const supersedeRequirementSchema = z.object({
+  requirementId: z.string().uuid(),
+  label: z.string().trim().min(1).max(300),
+  instructions: z.string().trim().max(4000).optional(),
 });
 
 export const renameRequirementSchema = z.object({
@@ -133,6 +142,8 @@ export async function addRequirement(
       label: parsed.label,
       instructions: parsed.instructions ?? null,
       position: parsed.position,
+      participant_id: parsed.participantId ?? null,
+      stage_id: parsed.stageId ?? null,
     })
     .select('id')
     .single();
@@ -248,4 +259,79 @@ export async function reorderRequirements(
     actor: { kind: 'member', authUserId: actorAuthUserId },
     metadata: { count: orderedRequirementIds.length },
   });
+}
+
+/**
+ * Supersedes a Requirement: archives the original and creates a successor carrying the new ask
+ * (design.md D7).
+ *
+ * This is the material-change path. A satisfied Requirement is never mutated in place — its
+ * Documents and Reviews stay linked to the original, which is archived with an explicit pointer
+ * to its successor, and the audit records the relationship. Cosmetic edits use `renameRequirement`
+ * instead and stay in place.
+ *
+ * The database guards the mechanics: the successor is a Requirement of the same Case (composite
+ * FK), never the original itself (check constraint).
+ */
+export async function supersedeRequirement(
+  client: DbClient,
+  input: z.input<typeof supersedeRequirementSchema>,
+  actorAuthUserId: string,
+): Promise<string> {
+  const { requirementId, label, instructions } = parseInput(supersedeRequirementSchema, input);
+
+  const { data: original, error: readError } = await client
+    .from('requirements')
+    .select('organization_id, case_id, participant_id, stage_id, position, type')
+    .eq('id', requirementId)
+    .maybeSingle();
+
+  if (readError) throw new Error(`Could not read requirement: ${readError.message}`);
+  if (!original) throw new Error('No such requirement');
+
+  // The successor inherits placement (participant, stage, position) and starts outstanding.
+  const { data: successor, error: insertError } = await client
+    .from('requirements')
+    .insert({
+      organization_id: original.organization_id,
+      case_id: original.case_id,
+      participant_id: original.participant_id,
+      stage_id: original.stage_id,
+      position: original.position,
+      type: original.type,
+      label,
+      instructions: instructions ?? null,
+    })
+    .select('id')
+    .single();
+
+  if (insertError || !successor) {
+    throw new Error(`Could not create successor requirement: ${insertError?.message}`);
+  }
+
+  // Archive the original and point it at its successor. Its Documents and Reviews are untouched.
+  const { error: archiveError } = await client
+    .from('requirements')
+    .update({
+      status: 'archived',
+      superseded_at: new Date().toISOString(),
+      superseded_by_requirement_id: successor.id,
+    })
+    .eq('id', requirementId);
+
+  if (archiveError) {
+    throw new Error(`Could not archive superseded requirement: ${archiveError.message}`);
+  }
+
+  await recordAuditEvent(client, {
+    organizationId: original.organization_id,
+    caseId: original.case_id,
+    action: 'requirement.superseded',
+    targetType: 'requirement',
+    targetId: requirementId,
+    actor: { kind: 'member', authUserId: actorAuthUserId },
+    metadata: { supersededBy: successor.id, newLabel: label },
+  });
+
+  return successor.id;
 }

@@ -29,7 +29,10 @@ type TableName =
   | 'reviews'
   | 'audit_events'
   | 'reminder_deliveries'
-  | 'staff_notifications';
+  | 'staff_notifications'
+  | 'case_participants'
+  | 'blueprint_stages'
+  | 'case_stages';
 
 interface SeededRow {
   readonly table: TableName;
@@ -95,14 +98,48 @@ async function seedEveryTable(world: OrganizationWorld): Promise<SeededRow[]> {
     .limit(1)
     .single();
 
+  const { data: participant, error: participantError } = await admin
+    .from('case_participants')
+    .select('id')
+    .eq('case_id', world.caseId)
+    .limit(1)
+    .single();
+  if (participantError || !participant) throw new Error(`seed participant: ${participantError?.message}`);
+
+  const { data: blueprintStage, error: bpStageError } = await admin
+    .from('blueprint_stages')
+    .insert({
+      organization_id: world.organizationId,
+      blueprint_id: world.blueprintId,
+      name: 'Documents',
+      position: 0,
+    })
+    .select('id')
+    .single();
+  if (bpStageError || !blueprintStage) throw new Error(`seed blueprint_stage: ${bpStageError?.message}`);
+
+  const { data: caseStage, error: caseStageError } = await admin
+    .from('case_stages')
+    .insert({
+      organization_id: world.organizationId,
+      case_id: world.caseId,
+      name: 'Documents',
+      position: 0,
+    })
+    .select('id')
+    .single();
+  if (caseStageError || !caseStage) throw new Error(`seed case_stage: ${caseStageError?.message}`);
+
   const { data: reminder, error: reminderError } = await admin
     .from('reminder_deliveries')
     .insert({
       organization_id: world.organizationId,
       case_id: world.caseId,
       grant_id: granted.grantId,
+      participant_id: world.participantId,
       cadence_window: 0,
-      sent_to_email: world.clientEmail,
+      channel: 'email',
+      destination: world.clientEmail,
     })
     .select('id')
     .single();
@@ -132,6 +169,9 @@ async function seedEveryTable(world: OrganizationWorld): Promise<SeededRow[]> {
     { table: 'audit_events', id: audit.id },
     { table: 'reminder_deliveries', id: reminder.id },
     { table: 'staff_notifications', id: notification.id },
+    { table: 'case_participants', id: participant.id },
+    { table: 'blueprint_stages', id: blueprintStage.id },
+    { table: 'case_stages', id: caseStage.id },
   ];
 }
 
@@ -144,6 +184,9 @@ const WRITABLE_BY_MEMBER: readonly TableName[] = [
   'case_access_grants',
   'requirements',
   'documents',
+  'case_participants',
+  'blueprint_stages',
+  'case_stages',
 ];
 
 describe('cross-tenant sweep', () => {
@@ -193,12 +236,15 @@ describe('cross-tenant sweep', () => {
         'requirements',
         'reviews',
         'staff_notifications',
+        'case_participants',
+        'blueprint_stages',
+        'case_stages',
       ].sort(),
     );
   });
 
   describe('reads', () => {
-    it.each(['organizations', 'members', 'clients', 'blueprints', 'cases', 'case_access_grants', 'requirements', 'documents', 'reviews', 'audit_events', 'reminder_deliveries', 'staff_notifications'] as const)(
+    it.each(['organizations', 'members', 'clients', 'blueprints', 'cases', 'case_access_grants', 'requirements', 'documents', 'reviews', 'audit_events', 'reminder_deliveries', 'staff_notifications', 'case_participants', 'blueprint_stages', 'case_stages'] as const)(
       'returns zero rows when a member of A selects %s from B',
       async (table) => {
         const target = rowsInB.find((row) => row.table === table);
@@ -211,7 +257,7 @@ describe('cross-tenant sweep', () => {
       },
     );
 
-    it.each(['organizations', 'members', 'clients', 'blueprints', 'cases', 'case_access_grants', 'requirements', 'documents', 'reviews', 'audit_events', 'reminder_deliveries', 'staff_notifications'] as const)(
+    it.each(['organizations', 'members', 'clients', 'blueprints', 'cases', 'case_access_grants', 'requirements', 'documents', 'reviews', 'audit_events', 'reminder_deliveries', 'staff_notifications', 'case_participants', 'blueprint_stages', 'case_stages'] as const)(
       'makes a real B row in %s indistinguishable from a nonexistent one',
       async (table) => {
         const target = rowsInB.find((row) => row.table === table);

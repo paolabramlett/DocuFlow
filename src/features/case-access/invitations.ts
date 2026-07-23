@@ -61,20 +61,24 @@ export async function issueInvitation(
   input: IssueInvitationInput,
   actorAuthUserId: string,
 ): Promise<IssuedInvitation> {
-  const { organizationId, caseId, clientId, permission } = parseInput(
+  const { organizationId, caseId, participantId, permission } = parseInput(
     issueInvitationSchema,
     input,
   );
 
-  const { data: clientRow, error: clientError } = await client
-    .from('clients')
-    .select('email')
-    .eq('id', clientId)
+  // The invited address comes from the Participant's Client, reached through the Participant.
+  // It is never an argument, so the OTP can only ever be sent to that stored address.
+  const { data: participantRow, error: participantError } = await client
+    .from('case_participants')
+    .select('client:clients(email)')
+    .eq('id', participantId)
+    .eq('case_id', caseId)
     .eq('organization_id', organizationId)
     .single();
 
-  if (clientError || !clientRow) {
-    throw new InvitationError('invalid_token', 'No such client in this organization');
+  const invitedEmail = participantRow?.client?.email;
+  if (participantError || !invitedEmail) {
+    throw new InvitationError('invalid_token', 'No such participant in this case');
   }
 
   const { token, hash } = generateInvitationToken();
@@ -84,8 +88,8 @@ export async function issueInvitation(
     .insert({
       organization_id: organizationId,
       case_id: caseId,
-      client_id: clientId,
-      invited_email: clientRow.email,
+      participant_id: participantId,
+      invited_email: invitedEmail,
       invitation_token_hash: hash,
       permission,
     })
@@ -117,7 +121,7 @@ interface PendingGrant {
   readonly id: string;
   readonly organization_id: string;
   readonly case_id: string;
-  readonly client_id: string;
+  readonly participant_id: string;
   readonly invited_email: string;
   readonly verified_at: string | null;
   readonly revoked_at: string | null;
@@ -138,7 +142,7 @@ async function findGrantByToken(admin: AdminClient, token: string): Promise<Pend
   const { data, error } = await admin
     .from('case_access_grants')
     .select(
-      'id, organization_id, case_id, client_id, invited_email, verified_at, revoked_at, otp_last_sent_at, otp_failed_attempts, otp_locked_until',
+      'id, organization_id, case_id, participant_id, invited_email, verified_at, revoked_at, otp_last_sent_at, otp_failed_attempts, otp_locked_until',
     )
     .eq('invitation_token_hash', hashInvitationToken(token))
     .maybeSingle();
@@ -280,13 +284,22 @@ export async function verifyInvitationOtp(
     throw new Error(`Could not activate grant: ${bindError.message}`);
   }
 
-  // Binds the identity to the Organization's Client record. Scoped to this Organization's row,
-  // so it never touches another tenant's record of the same person.
-  await admin
-    .from('clients')
-    .update({ auth_user_id: authUserId })
-    .eq('id', grant.client_id)
-    .is('auth_user_id', null);
+  // Binds the identity to the Organization's Client record, reached through the Participant.
+  // Scoped to this Organization's row, so it never touches another tenant's record of the same
+  // person.
+  const { data: participant } = await admin
+    .from('case_participants')
+    .select('client_id')
+    .eq('id', grant.participant_id)
+    .single();
+
+  if (participant?.client_id) {
+    await admin
+      .from('clients')
+      .update({ auth_user_id: authUserId })
+      .eq('id', participant.client_id)
+      .is('auth_user_id', null);
+  }
 
   await recordAuditEvent(admin, {
     organizationId: grant.organization_id,
@@ -380,7 +393,7 @@ export async function reissueInvitation(
 ): Promise<IssuedInvitation> {
   const { data: existing, error } = await client
     .from('case_access_grants')
-    .select('organization_id, case_id, client_id, permission')
+    .select('organization_id, case_id, participant_id, permission')
     .eq('id', expiredGrantId)
     .single();
 
@@ -393,7 +406,7 @@ export async function reissueInvitation(
     {
       organizationId: existing.organization_id,
       caseId: existing.case_id,
-      clientId: existing.client_id,
+      participantId: existing.participant_id,
       // The column is CHECK-constrained rather than an enum, so generated types widen it to
       // string. Re-parsing keeps Zod as the single type boundary and turns an unexpected stored
       // value into a loud failure instead of a silent cast.

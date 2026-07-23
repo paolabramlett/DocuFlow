@@ -84,6 +84,48 @@ export type Database = {
           },
         ]
       }
+      blueprint_stages: {
+        Row: {
+          blueprint_id: string
+          created_at: string
+          id: string
+          name: string
+          organization_id: string
+          position: number
+        }
+        Insert: {
+          blueprint_id: string
+          created_at?: string
+          id?: string
+          name: string
+          organization_id: string
+          position: number
+        }
+        Update: {
+          blueprint_id?: string
+          created_at?: string
+          id?: string
+          name?: string
+          organization_id?: string
+          position?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "blueprint_stages_blueprint_id_organization_id_fkey"
+            columns: ["blueprint_id", "organization_id"]
+            isOneToOne: false
+            referencedRelation: "blueprints"
+            referencedColumns: ["id", "organization_id"]
+          },
+          {
+            foreignKeyName: "blueprint_stages_organization_id_fkey"
+            columns: ["organization_id"]
+            isOneToOne: false
+            referencedRelation: "organizations"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       blueprints: {
         Row: {
           created_at: string
@@ -126,7 +168,6 @@ export type Database = {
         Row: {
           auth_user_id: string | null
           case_id: string
-          client_id: string
           created_at: string
           expires_at: string | null
           id: string
@@ -136,6 +177,7 @@ export type Database = {
           otp_failed_attempts: number
           otp_last_sent_at: string | null
           otp_locked_until: string | null
+          participant_id: string
           permission: string
           revoked_at: string | null
           updated_at: string
@@ -144,7 +186,6 @@ export type Database = {
         Insert: {
           auth_user_id?: string | null
           case_id: string
-          client_id: string
           created_at?: string
           expires_at?: string | null
           id?: string
@@ -154,6 +195,7 @@ export type Database = {
           otp_failed_attempts?: number
           otp_last_sent_at?: string | null
           otp_locked_until?: string | null
+          participant_id: string
           permission?: string
           revoked_at?: string | null
           updated_at?: string
@@ -162,7 +204,6 @@ export type Database = {
         Update: {
           auth_user_id?: string | null
           case_id?: string
-          client_id?: string
           created_at?: string
           expires_at?: string | null
           id?: string
@@ -172,6 +213,7 @@ export type Database = {
           otp_failed_attempts?: number
           otp_last_sent_at?: string | null
           otp_locked_until?: string | null
+          participant_id?: string
           permission?: string
           revoked_at?: string | null
           updated_at?: string
@@ -186,14 +228,108 @@ export type Database = {
             referencedColumns: ["id", "organization_id"]
           },
           {
-            foreignKeyName: "case_access_grants_client_id_organization_id_fkey"
+            foreignKeyName: "case_access_grants_organization_id_fkey"
+            columns: ["organization_id"]
+            isOneToOne: false
+            referencedRelation: "organizations"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "case_access_grants_participant_fk"
+            columns: ["participant_id", "case_id", "organization_id"]
+            isOneToOne: false
+            referencedRelation: "case_participants"
+            referencedColumns: ["id", "case_id", "organization_id"]
+          },
+        ]
+      }
+      case_participants: {
+        Row: {
+          case_id: string
+          client_id: string
+          created_at: string
+          id: string
+          organization_id: string
+          role_label: string
+          updated_at: string
+        }
+        Insert: {
+          case_id: string
+          client_id: string
+          created_at?: string
+          id?: string
+          organization_id: string
+          role_label: string
+          updated_at?: string
+        }
+        Update: {
+          case_id?: string
+          client_id?: string
+          created_at?: string
+          id?: string
+          organization_id?: string
+          role_label?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "case_participants_case_id_organization_id_fkey"
+            columns: ["case_id", "organization_id"]
+            isOneToOne: false
+            referencedRelation: "cases"
+            referencedColumns: ["id", "organization_id"]
+          },
+          {
+            foreignKeyName: "case_participants_client_id_organization_id_fkey"
             columns: ["client_id", "organization_id"]
             isOneToOne: false
             referencedRelation: "clients"
             referencedColumns: ["id", "organization_id"]
           },
           {
-            foreignKeyName: "case_access_grants_organization_id_fkey"
+            foreignKeyName: "case_participants_organization_id_fkey"
+            columns: ["organization_id"]
+            isOneToOne: false
+            referencedRelation: "organizations"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      case_stages: {
+        Row: {
+          case_id: string
+          created_at: string
+          id: string
+          name: string
+          organization_id: string
+          position: number
+        }
+        Insert: {
+          case_id: string
+          created_at?: string
+          id?: string
+          name: string
+          organization_id: string
+          position: number
+        }
+        Update: {
+          case_id?: string
+          created_at?: string
+          id?: string
+          name?: string
+          organization_id?: string
+          position?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "case_stages_case_id_organization_id_fkey"
+            columns: ["case_id", "organization_id"]
+            isOneToOne: false
+            referencedRelation: "cases"
+            referencedColumns: ["id", "organization_id"]
+          },
+          {
+            foreignKeyName: "case_stages_organization_id_fkey"
             columns: ["organization_id"]
             isOneToOne: false
             referencedRelation: "organizations"
@@ -437,42 +573,48 @@ export type Database = {
           attempt_count: number
           cadence_window: number
           case_id: string
+          channel: string
+          destination: string | null
           failed_at: string | null
           grant_id: string
           id: string
           last_error: string | null
           organization_id: string
+          participant_id: string | null
           queued_at: string
           sent_at: string | null
-          sent_to_email: string | null
           status: string
         }
         Insert: {
           attempt_count?: number
           cadence_window: number
           case_id: string
+          channel?: string
+          destination?: string | null
           failed_at?: string | null
           grant_id: string
           id?: string
           last_error?: string | null
           organization_id: string
+          participant_id?: string | null
           queued_at?: string
           sent_at?: string | null
-          sent_to_email?: string | null
           status?: string
         }
         Update: {
           attempt_count?: number
           cadence_window?: number
           case_id?: string
+          channel?: string
+          destination?: string | null
           failed_at?: string | null
           grant_id?: string
           id?: string
           last_error?: string | null
           organization_id?: string
+          participant_id?: string | null
           queued_at?: string
           sent_at?: string | null
-          sent_to_email?: string | null
           status?: string
         }
         Relationships: [
@@ -497,6 +639,13 @@ export type Database = {
             referencedRelation: "organizations"
             referencedColumns: ["id"]
           },
+          {
+            foreignKeyName: "reminder_deliveries_participant_fk"
+            columns: ["participant_id", "organization_id"]
+            isOneToOne: false
+            referencedRelation: "case_participants"
+            referencedColumns: ["id", "organization_id"]
+          },
         ]
       }
       requirements: {
@@ -509,8 +658,12 @@ export type Database = {
           instructions: string | null
           label: string
           organization_id: string
+          participant_id: string | null
           position: number
+          stage_id: string | null
           status: string
+          superseded_at: string | null
+          superseded_by_requirement_id: string | null
           type: string
           updated_at: string
         }
@@ -523,8 +676,12 @@ export type Database = {
           instructions?: string | null
           label: string
           organization_id: string
+          participant_id?: string | null
           position: number
+          stage_id?: string | null
           status?: string
+          superseded_at?: string | null
+          superseded_by_requirement_id?: string | null
           type: string
           updated_at?: string
         }
@@ -537,8 +694,12 @@ export type Database = {
           instructions?: string | null
           label?: string
           organization_id?: string
+          participant_id?: string | null
           position?: number
+          stage_id?: string | null
           status?: string
+          superseded_at?: string | null
+          superseded_by_requirement_id?: string | null
           type?: string
           updated_at?: string
         }
@@ -556,6 +717,42 @@ export type Database = {
             isOneToOne: false
             referencedRelation: "organizations"
             referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "requirements_participant_fk"
+            columns: ["participant_id", "case_id", "organization_id"]
+            isOneToOne: false
+            referencedRelation: "case_participants"
+            referencedColumns: ["id", "case_id", "organization_id"]
+          },
+          {
+            foreignKeyName: "requirements_stage_fk"
+            columns: ["stage_id", "case_id", "organization_id"]
+            isOneToOne: false
+            referencedRelation: "case_stages"
+            referencedColumns: ["id", "case_id", "organization_id"]
+          },
+          {
+            foreignKeyName: "requirements_superseded_by_fk"
+            columns: [
+              "superseded_by_requirement_id",
+              "case_id",
+              "organization_id",
+            ]
+            isOneToOne: false
+            referencedRelation: "active_requirements"
+            referencedColumns: ["id", "case_id", "organization_id"]
+          },
+          {
+            foreignKeyName: "requirements_superseded_by_fk"
+            columns: [
+              "superseded_by_requirement_id",
+              "case_id",
+              "organization_id",
+            ]
+            isOneToOne: false
+            referencedRelation: "requirements"
+            referencedColumns: ["id", "case_id", "organization_id"]
           },
         ]
       }
@@ -666,7 +863,9 @@ export type Database = {
           instructions: string | null
           label: string | null
           organization_id: string | null
+          participant_id: string | null
           position: number | null
+          stage_id: string | null
           status: string | null
           type: string | null
           updated_at: string | null
@@ -679,7 +878,9 @@ export type Database = {
           instructions?: string | null
           label?: string | null
           organization_id?: string | null
+          participant_id?: string | null
           position?: number | null
+          stage_id?: string | null
           status?: string | null
           type?: string | null
           updated_at?: string | null
@@ -692,7 +893,9 @@ export type Database = {
           instructions?: string | null
           label?: string | null
           organization_id?: string | null
+          participant_id?: string | null
           position?: number | null
+          stage_id?: string | null
           status?: string | null
           type?: string | null
           updated_at?: string | null
@@ -711,6 +914,20 @@ export type Database = {
             isOneToOne: false
             referencedRelation: "organizations"
             referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "requirements_participant_fk"
+            columns: ["participant_id", "case_id", "organization_id"]
+            isOneToOne: false
+            referencedRelation: "case_participants"
+            referencedColumns: ["id", "case_id", "organization_id"]
+          },
+          {
+            foreignKeyName: "requirements_stage_fk"
+            columns: ["stage_id", "case_id", "organization_id"]
+            isOneToOne: false
+            referencedRelation: "case_stages"
+            referencedColumns: ["id", "case_id", "organization_id"]
           },
         ]
       }

@@ -20,7 +20,55 @@ export interface OrganizationWorld {
   readonly clientEmail: string;
   readonly blueprintId: string;
   readonly caseId: string;
+  /** The Case's primary Participant; the cloned Requirements are assigned to it. */
+  readonly participantId: string;
   readonly requirementIds: readonly string[];
+}
+
+export interface ParticipantHandle {
+  readonly participantId: string;
+  readonly clientId: string;
+  readonly clientEmail: string;
+}
+
+/**
+ * Adds a Participant to a Case: creates its Client, the Participant row, and returns handles.
+ * Used to build multi-party Cases for the intra-Case isolation tests.
+ */
+export async function addParticipant(
+  world: OrganizationWorld,
+  options: { roleLabel: string; clientEmail: string; fullName?: string },
+): Promise<ParticipantHandle> {
+  const { data: client, error: clientError } = await world.staff.client
+    .from('clients')
+    .insert({
+      organization_id: world.organizationId,
+      full_name: options.fullName ?? 'Second Party',
+      email: options.clientEmail,
+    })
+    .select('id')
+    .single();
+  if (clientError || !client) throw new Error(`fixture: client: ${clientError?.message}`);
+
+  const { data: participant, error: participantError } = await world.staff.client
+    .from('case_participants')
+    .insert({
+      organization_id: world.organizationId,
+      case_id: world.caseId,
+      client_id: client.id,
+      role_label: options.roleLabel,
+    })
+    .select('id')
+    .single();
+  if (participantError || !participant) {
+    throw new Error(`fixture: participant: ${participantError?.message}`);
+  }
+
+  return {
+    participantId: participant.id,
+    clientId: client.id,
+    clientEmail: options.clientEmail,
+  };
 }
 
 const BLUEPRINT_DEFINITIONS = [
@@ -86,6 +134,30 @@ export async function buildOrganizationWorld(options: {
     throw new Error(`fixture: could not create case: ${caseError?.message}`);
   }
 
+  // A Case needs at least one Participant to be actionable. Create the primary Participant and
+  // assign the cloned Requirements to it, so a granted Client can see them.
+  const { data: participant, error: participantError } = await staff.client
+    .from('case_participants')
+    .insert({
+      organization_id: organizationId,
+      case_id: caseId,
+      client_id: client.id,
+      role_label: 'primary',
+    })
+    .select('id')
+    .single();
+  if (participantError || !participant) {
+    throw new Error(`fixture: could not create participant: ${participantError?.message}`);
+  }
+
+  const { error: assignError } = await staff.client
+    .from('requirements')
+    .update({ participant_id: participant.id })
+    .eq('case_id', caseId);
+  if (assignError) {
+    throw new Error(`fixture: could not assign requirements: ${assignError.message}`);
+  }
+
   const { data: requirements, error: requirementsError } = await staff.client
     .from('requirements')
     .select('id')
@@ -104,6 +176,7 @@ export async function buildOrganizationWorld(options: {
     clientEmail: options.clientEmail,
     blueprintId: blueprint.id,
     caseId,
+    participantId: participant.id,
     requirementIds: requirements.map((row) => row.id),
   };
 }
@@ -153,6 +226,7 @@ async function findAuthUserIdByEmail(
 
 export interface GrantedClient {
   readonly grantId: string;
+  readonly participantId: string;
   readonly authUserId: string;
   /** Authenticated as the Client, carrying only what the grant allows. */
   readonly client: DocuFlowClient;
@@ -171,12 +245,18 @@ export async function grantVerifiedAccess(options: {
   expiresAt?: Date;
   /** Backdate activation to test cadence boundaries against a seeded clock. */
   verifiedAt?: Date;
+  /** Grant against a specific Participant; defaults to the world's primary Participant. */
+  participantId?: string;
+  /** The Participant's Client, for binding the identity; defaults to the primary Client. */
+  clientId?: string;
   /** Reuse an identity so one human can hold grants in several Organizations. */
   existingAuthUserId?: string;
   existingEmail?: string;
 }): Promise<GrantedClient> {
   const admin = adminClient();
   const email = options.existingEmail ?? options.world.clientEmail;
+  const participantId = options.participantId ?? options.world.participantId;
+  const clientId = options.clientId ?? options.world.clientId;
   const password = randomUUID();
 
   // Create or reuse, mirroring what verification does in the real flow: one verified email maps
@@ -208,7 +288,7 @@ export async function grantVerifiedAccess(options: {
     .insert({
       organization_id: options.world.organizationId,
       case_id: options.world.caseId,
-      client_id: options.world.clientId,
+      participant_id: participantId,
       invited_email: email,
       invitation_token_hash: createHash('sha256').update(randomBytes(32)).digest('hex'),
       permission: options.permission ?? 'upload',
@@ -223,10 +303,7 @@ export async function grantVerifiedAccess(options: {
     throw new Error(`fixture: could not create grant: ${grantError?.message}`);
   }
 
-  await admin
-    .from('clients')
-    .update({ auth_user_id: authUserId })
-    .eq('id', options.world.clientId);
+  await admin.from('clients').update({ auth_user_id: authUserId }).eq('id', clientId);
 
   const client = anonClient();
   const { error: signInError } = await client.auth.signInWithPassword({ email, password });
@@ -234,5 +311,5 @@ export async function grantVerifiedAccess(options: {
     throw new Error(`fixture: could not sign in client: ${signInError.message}`);
   }
 
-  return { grantId: grant.id, authUserId, client };
+  return { grantId: grant.id, participantId, authUserId, client };
 }

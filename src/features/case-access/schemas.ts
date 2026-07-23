@@ -12,7 +12,7 @@ export const permissionSchema = z.enum(['upload', 'view', 'none']);
 export const issueInvitationSchema = z.object({
   organizationId: z.string().uuid(),
   caseId: z.string().uuid(),
-  clientId: z.string().uuid(),
+  participantId: z.string().uuid(),
   permission: permissionSchema.default('upload'),
 });
 

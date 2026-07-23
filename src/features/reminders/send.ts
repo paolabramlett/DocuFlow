@@ -63,7 +63,9 @@ interface QueuedDelivery {
   readonly organization_id: string;
   readonly case_id: string;
   readonly grant_id: string;
-  readonly sent_to_email: string | null;
+  readonly participant_id: string | null;
+  readonly channel: string;
+  readonly destination: string | null;
   readonly attempt_count: number;
 }
 
@@ -90,7 +92,9 @@ export async function drainReminderQueue(
 ): Promise<DrainResult> {
   const { data: deliveries, error } = await admin
     .from('reminder_deliveries')
-    .select('id, organization_id, case_id, grant_id, sent_to_email, attempt_count, status')
+    .select(
+      'id, organization_id, case_id, grant_id, participant_id, channel, destination, attempt_count, status',
+    )
     .in('status', ['queued', 'failed'])
     .lt('attempt_count', MAX_SEND_ATTEMPTS);
 
@@ -117,8 +121,11 @@ async function deliverOne(
   const attempt = delivery.attempt_count + 1;
 
   try {
-    if (!delivery.sent_to_email) {
-      throw new Error('delivery has no recipient address');
+    if (delivery.channel !== 'email') {
+      throw new Error(`unsupported delivery channel: ${delivery.channel}`);
+    }
+    if (!delivery.destination) {
+      throw new Error('delivery has no destination');
     }
 
     // The Case context for the email, read now rather than trusted from the queue row.
@@ -132,17 +139,23 @@ async function deliverOne(
       throw new Error(`could not read case: ${caseError?.message ?? 'not found'}`);
     }
 
-    const { count: outstanding, error: countError } = await admin
+    // Count only what this Participant still owes — a reminder chases one party's outstanding
+    // work, not the whole Case (design.md D11).
+    const outstandingQuery = admin
       .from('requirements')
       .select('id', { count: 'exact', head: true })
       .eq('case_id', delivery.case_id)
       .is('deleted_at', null)
-      .neq('status', 'satisfied');
+      .is('superseded_at', null)
+      .eq('status', 'outstanding');
+    const { count: outstanding, error: countError } = delivery.participant_id
+      ? await outstandingQuery.eq('participant_id', delivery.participant_id)
+      : await outstandingQuery;
 
     if (countError) throw new Error(`could not count requirements: ${countError.message}`);
 
     const email = parseInput(reminderEmailSchema, {
-      to: delivery.sent_to_email,
+      to: delivery.destination,
       organizationName: caseRow.organization?.name ?? '',
       caseTitle: caseRow.title,
       outstandingCount: outstanding ?? 1,

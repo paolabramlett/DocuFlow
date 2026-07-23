@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { adminClient, type DocuFlowClient } from '../helpers/clients';
-import { selectDueReminders } from '../helpers/db';
+import { queueDueReminders } from '../helpers/db';
 import {
   buildOrganizationWorld,
   grantVerifiedAccess,
@@ -20,7 +20,7 @@ async function freshWorld(label: string): Promise<OrganizationWorld> {
 
 /** Runs the cron's selection and returns the rows queued for one case. */
 async function selectDueFor(caseId: string): Promise<{ case_id: string; cadence_window: number }[]> {
-  const due = await selectDueReminders();
+  const due = await queueDueReminders();
   return due.filter((row) => row.case_id === caseId);
 }
 
@@ -210,11 +210,11 @@ describe('client reminders — due selection', () => {
 
       const { data } = await adminClient()
         .from('reminder_deliveries')
-        .select('sent_to_email, status, grant_id')
+        .select('destination, status, grant_id')
         .eq('case_id', world.caseId)
         .single();
 
-      expect(data?.sent_to_email).toBe(world.clientEmail);
+      expect(data?.destination).toBe(world.clientEmail);
       expect(data?.status).toBe('queued');
       expect(data?.grant_id).toBe(granted.grantId);
     });
