@@ -150,7 +150,15 @@ describe('schema guards', () => {
     `);
 
     expect(rows.map((r) => r.table_name).sort()).toEqual(
-      ['case_access_grants', 'cases', 'documents', 'requirements', 'reviews'].sort(),
+      [
+        'case_access_grants',
+        'cases',
+        'documents',
+        'reminder_deliveries',
+        'requirements',
+        'reviews',
+        'staff_notifications',
+      ].sort(),
     );
   });
 });

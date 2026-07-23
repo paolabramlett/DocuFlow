@@ -18,6 +18,8 @@ export type AuditAction =
   | 'grant.revoked'
   | 'document.uploaded'
   | 'review.decided'
+  | 'reminder.sent'
+  | 'reminder.failed'
   | 'member.added'
   | 'member.removed';
 

@@ -18,6 +18,10 @@ const eslintConfig = defineConfig([
     ".agents/**",
     ".claude/**",
     "src/types/database.ts",
+
+    // Supabase Edge Functions run on Deno, not Node — different globals, jsr: imports, and .ts
+    // extensions. They are typechecked by the Supabase CLI / Deno, not this config.
+    "supabase/functions/**",
   ]),
 ]);
 

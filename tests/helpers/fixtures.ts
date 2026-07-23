@@ -169,6 +169,8 @@ export async function grantVerifiedAccess(options: {
   world: OrganizationWorld;
   permission?: Permission;
   expiresAt?: Date;
+  /** Backdate activation to test cadence boundaries against a seeded clock. */
+  verifiedAt?: Date;
   /** Reuse an identity so one human can hold grants in several Organizations. */
   existingAuthUserId?: string;
   existingEmail?: string;
@@ -199,6 +201,7 @@ export async function grantVerifiedAccess(options: {
   }
 
   const expiresAt = options.expiresAt ?? new Date(Date.now() + 90 * 24 * 60 * 60 * 1000);
+  const verifiedAt = options.verifiedAt ?? new Date();
 
   const { data: grant, error: grantError } = await admin
     .from('case_access_grants')
@@ -210,7 +213,7 @@ export async function grantVerifiedAccess(options: {
       invitation_token_hash: createHash('sha256').update(randomBytes(32)).digest('hex'),
       permission: options.permission ?? 'upload',
       auth_user_id: authUserId,
-      verified_at: new Date().toISOString(),
+      verified_at: verifiedAt.toISOString(),
       expires_at: expiresAt.toISOString(),
     })
     .select('id')

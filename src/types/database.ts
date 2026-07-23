@@ -403,6 +403,9 @@ export type Database = {
           id: string
           industry: string
           name: string
+          reminder_first_delay_days: number
+          reminder_interval_days: number
+          reminder_max_count: number
           updated_at: string
         }
         Insert: {
@@ -411,6 +414,9 @@ export type Database = {
           id?: string
           industry: string
           name: string
+          reminder_first_delay_days?: number
+          reminder_interval_days?: number
+          reminder_max_count?: number
           updated_at?: string
         }
         Update: {
@@ -419,9 +425,79 @@ export type Database = {
           id?: string
           industry?: string
           name?: string
+          reminder_first_delay_days?: number
+          reminder_interval_days?: number
+          reminder_max_count?: number
           updated_at?: string
         }
         Relationships: []
+      }
+      reminder_deliveries: {
+        Row: {
+          attempt_count: number
+          cadence_window: number
+          case_id: string
+          failed_at: string | null
+          grant_id: string
+          id: string
+          last_error: string | null
+          organization_id: string
+          queued_at: string
+          sent_at: string | null
+          sent_to_email: string | null
+          status: string
+        }
+        Insert: {
+          attempt_count?: number
+          cadence_window: number
+          case_id: string
+          failed_at?: string | null
+          grant_id: string
+          id?: string
+          last_error?: string | null
+          organization_id: string
+          queued_at?: string
+          sent_at?: string | null
+          sent_to_email?: string | null
+          status?: string
+        }
+        Update: {
+          attempt_count?: number
+          cadence_window?: number
+          case_id?: string
+          failed_at?: string | null
+          grant_id?: string
+          id?: string
+          last_error?: string | null
+          organization_id?: string
+          queued_at?: string
+          sent_at?: string | null
+          sent_to_email?: string | null
+          status?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "reminder_deliveries_case_id_organization_id_fkey"
+            columns: ["case_id", "organization_id"]
+            isOneToOne: false
+            referencedRelation: "cases"
+            referencedColumns: ["id", "organization_id"]
+          },
+          {
+            foreignKeyName: "reminder_deliveries_grant_id_organization_id_fkey"
+            columns: ["grant_id", "organization_id"]
+            isOneToOne: false
+            referencedRelation: "case_access_grants"
+            referencedColumns: ["id", "organization_id"]
+          },
+          {
+            foreignKeyName: "reminder_deliveries_organization_id_fkey"
+            columns: ["organization_id"]
+            isOneToOne: false
+            referencedRelation: "organizations"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       requirements: {
         Row: {
@@ -524,6 +600,54 @@ export type Database = {
           },
           {
             foreignKeyName: "reviews_organization_id_fkey"
+            columns: ["organization_id"]
+            isOneToOne: false
+            referencedRelation: "organizations"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      staff_notifications: {
+        Row: {
+          acknowledged_at: string | null
+          case_id: string
+          created_at: string
+          id: string
+          organization_id: string
+          reason: string
+          target_id: string | null
+          target_type: string
+        }
+        Insert: {
+          acknowledged_at?: string | null
+          case_id: string
+          created_at?: string
+          id?: string
+          organization_id: string
+          reason: string
+          target_id?: string | null
+          target_type: string
+        }
+        Update: {
+          acknowledged_at?: string | null
+          case_id?: string
+          created_at?: string
+          id?: string
+          organization_id?: string
+          reason?: string
+          target_id?: string | null
+          target_type?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "staff_notifications_case_id_organization_id_fkey"
+            columns: ["case_id", "organization_id"]
+            isOneToOne: false
+            referencedRelation: "cases"
+            referencedColumns: ["id", "organization_id"]
+          },
+          {
+            foreignKeyName: "staff_notifications_organization_id_fkey"
             columns: ["organization_id"]
             isOneToOne: false
             referencedRelation: "organizations"

@@ -86,8 +86,13 @@ Nothing to migrate from. Applied forward as ordered migrations:
 
 Each table ships with RLS enabled in the same migration, as in the initial schema.
 
+## Resolved During Implementation
+
+- **Cadence defaults — 3 / 7 / 4.** First reminder at 3 days, repeat every 7, cap at 4, stored as `organizations.reminder_first_delay_days`, `reminder_interval_days`, `reminder_max_count`. Still a guess about notary rhythm; changing the default is one migration and changing a live Organization's value is a row update.
+- **Local pg_cron — available.** `create extension pg_cron` succeeds in the local stack, so the schedule ships in a migration (`*/15 * * * *` running `app.select_due_reminders()`) and `db reset` installs it. The selection function is tested directly over a pg connection, exactly as the cron invokes it, so its correctness does not depend on the scheduler firing.
+- **Resend test delivery — a fake `MailSender`.** The send path takes a `MailSender` interface; tests inject a recording or failing implementation to assert targeting, idempotency, retry, and recovery without any network call. The live Resend transport is constructed only inside the Edge Function, from a secret, so no test imports the key.
+- **CI — no new step.** pg_cron is applied by migrations during `supabase start`, and `supabase/functions` is excluded from the Node typecheck and lint (it is Deno). The Edge Function is deployed separately and is not part of the test build.
+
 ## Open Questions
 
-- **Cadence defaults.** Proposed: first reminder at 3 days, repeat every 7, cap at 4. These are guesses about notary follow-up rhythm and should be confirmed; they are Organization columns, so changing the default costs one migration and changing a live value costs nothing.
-- **Local pg_cron.** pg_cron scheduling may need enabling in the local stack for the schedule itself to be testable; the selection function is testable without it regardless, by invoking it directly. Resolve during implementation.
-- **Resend test delivery.** Whether to assert the send against Resend's test mode or a captured outbound request — decided when the Edge Function is built, without changing the selection contract.
+- **Staff notification email.** Deferred by design: Staff get notification rows, not emails, in this change. Whether Staff eventually want email for `review_needed` or `case_ready` is a later product call.

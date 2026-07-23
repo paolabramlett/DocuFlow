@@ -27,7 +27,9 @@ type TableName =
   | 'requirements'
   | 'documents'
   | 'reviews'
-  | 'audit_events';
+  | 'audit_events'
+  | 'reminder_deliveries'
+  | 'staff_notifications';
 
 interface SeededRow {
   readonly table: TableName;
@@ -93,6 +95,30 @@ async function seedEveryTable(world: OrganizationWorld): Promise<SeededRow[]> {
     .limit(1)
     .single();
 
+  const { data: reminder, error: reminderError } = await admin
+    .from('reminder_deliveries')
+    .insert({
+      organization_id: world.organizationId,
+      case_id: world.caseId,
+      grant_id: granted.grantId,
+      cadence_window: 0,
+      sent_to_email: world.clientEmail,
+    })
+    .select('id')
+    .single();
+  if (reminderError || !reminder) throw new Error(`seed reminder: ${reminderError?.message}`);
+
+  // The document insert above already fired a review_needed notification via trigger; read it.
+  const { data: notification, error: notificationError } = await admin
+    .from('staff_notifications')
+    .select('id')
+    .eq('case_id', world.caseId)
+    .limit(1)
+    .single();
+  if (notificationError || !notification) {
+    throw new Error(`seed notification: ${notificationError?.message}`);
+  }
+
   return [
     { table: 'organizations', id: world.organizationId },
     { table: 'members', id: member?.id ?? '' },
@@ -104,6 +130,8 @@ async function seedEveryTable(world: OrganizationWorld): Promise<SeededRow[]> {
     { table: 'documents', id: document.id },
     { table: 'reviews', id: review.id },
     { table: 'audit_events', id: audit.id },
+    { table: 'reminder_deliveries', id: reminder.id },
+    { table: 'staff_notifications', id: notification.id },
   ];
 }
 
@@ -161,14 +189,16 @@ describe('cross-tenant sweep', () => {
         'documents',
         'members',
         'organizations',
+        'reminder_deliveries',
         'requirements',
         'reviews',
+        'staff_notifications',
       ].sort(),
     );
   });
 
   describe('reads', () => {
-    it.each(['organizations', 'members', 'clients', 'blueprints', 'cases', 'case_access_grants', 'requirements', 'documents', 'reviews', 'audit_events'] as const)(
+    it.each(['organizations', 'members', 'clients', 'blueprints', 'cases', 'case_access_grants', 'requirements', 'documents', 'reviews', 'audit_events', 'reminder_deliveries', 'staff_notifications'] as const)(
       'returns zero rows when a member of A selects %s from B',
       async (table) => {
         const target = rowsInB.find((row) => row.table === table);
@@ -181,7 +211,7 @@ describe('cross-tenant sweep', () => {
       },
     );
 
-    it.each(['organizations', 'members', 'clients', 'blueprints', 'cases', 'case_access_grants', 'requirements', 'documents', 'reviews', 'audit_events'] as const)(
+    it.each(['organizations', 'members', 'clients', 'blueprints', 'cases', 'case_access_grants', 'requirements', 'documents', 'reviews', 'audit_events', 'reminder_deliveries', 'staff_notifications'] as const)(
       'makes a real B row in %s indistinguishable from a nonexistent one',
       async (table) => {
         const target = rowsInB.find((row) => row.table === table);

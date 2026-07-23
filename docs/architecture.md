@@ -181,6 +181,22 @@ Never write a passcode, session token, signed URL, or file content into an event
 `recordAuditEvent` refuses a metadata key that looks like one, but the real rule is not to pass
 it.
 
+## The reminder engine
+
+The follow-up engine is what the product exists to be. Two mechanisms, kept separate:
+
+**Client reminders are scheduled.** pg_cron runs `app.select_due_reminders()` every 15 minutes. It queues a `reminder_deliveries` row for every Case that is due, then a Supabase Edge Function (`supabase/functions/send-reminders`) drains the queue and sends through Resend. pg_cron holds no access decision and touches no external service; the Edge Function is the only place the outside world is reached, and the Resend key is a function secret — never in the database, never in the Next app.
+
+**Cadence is an Organization policy**, three columns on `organizations` (first-delay, interval, max), defaulting to 3 / 7 / 4 and hidden from the MVP UI. The due time for the next reminder is a **deterministic cadence window** computed from the grant's activation time and the interval — never from `now()`. Reminder *k* is due at `activation + first_delay + k*interval`, and the "current window" is the highest *k* whose due time has passed, capped at `max - 1`. Only the current window is queued, so a lapsed cron sends one nudge on recovery, not a burst.
+
+**Idempotency is structural, not timing-based.** A `unique (case_id, cadence_window)` constraint means the same window cannot be queued twice; two overlapping cron runs, or a retry, conflict and do nothing. The delivery row is written *before* the send is attempted, so the failure mode is recorded-but-unsent (visible, retryable), never sent-but-unrecorded. A failed send is marked `failed` with an attempt count and retried up to a bound, then left for inspection.
+
+**Suppression is a selection concern.** A Case that is due by the clock but should not be chased — completed, cancelled, grant revoked or expired, all requirements satisfied, cap reached, permission `none` — is excluded by `select_due_reminders`, which reuses the same active-grant definition as `app.granted_case_ids`. There is one definition of "active grant" in the system.
+
+## Staff notifications
+
+Distinct from reminders: **event-driven rows, not emails.** A trigger on `documents` insert creates a `review_needed` notification when a Client (non-member) uploads; a trigger on `requirements` creates a `case_ready` notification on the *transition* to zero outstanding requirements, so one notification per Case-becoming-ready rather than one per approval. Staff are logged into the product, so a row they see on next load suffices; the Client is absent and must be reached by email. Sending Staff email is deferred to a later change.
+
 ## Testing
 
 `npm test` runs against a local Supabase stack.
