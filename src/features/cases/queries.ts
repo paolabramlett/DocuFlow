@@ -19,6 +19,8 @@ export interface RequirementView {
   label: string;
   state: ReqDisplayState;
   rejectionReason?: string;
+  /** The most recent Document awaiting or having received a decision, if any was uploaded. */
+  documentId?: string;
 }
 export interface ParticipantView {
   id: string;
@@ -52,6 +54,7 @@ interface RawReview {
 }
 interface RawDocument {
   id: string;
+  created_at: string;
   reviews: RawReview[];
 }
 interface RawRequirement {
@@ -63,17 +66,23 @@ interface RawRequirement {
   documents: RawDocument[];
 }
 
-function deriveState(r: RawRequirement): { state: ReqDisplayState; rejectionReason?: string } {
-  if (r.status === "satisfied") return { state: "approved" };
+function deriveState(
+  r: RawRequirement,
+): { state: ReqDisplayState; rejectionReason?: string; documentId?: string } {
+  const latestDocument = [...r.documents].sort(
+    (a, b) => Date.parse(b.created_at) - Date.parse(a.created_at),
+  )[0];
+
+  if (r.status === "satisfied") return { state: "approved", documentId: latestDocument?.id };
 
   const latestReview = r.documents
     .flatMap((d) => d.reviews)
     .sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at))[0];
 
   if (latestReview?.decision === "rejected") {
-    return { state: "rejected", rejectionReason: latestReview.reason ?? undefined };
+    return { state: "rejected", rejectionReason: latestReview.reason ?? undefined, documentId: latestDocument?.id };
   }
-  if (r.documents.length > 0) return { state: "review" };
+  if (r.documents.length > 0) return { state: "review", documentId: latestDocument?.id };
   return { state: "awaiting" };
 }
 
@@ -90,7 +99,7 @@ export async function getWorkspaceCases(): Promise<CaseView[]> {
       `id, title, state, created_at,
        participants:case_participants(id, role_label, client:clients(full_name),
          requirements(id, label, status, position, participant_id, deleted_at, superseded_at,
-           documents(id, reviews(decision, reason, created_at)))
+           documents(id, created_at, reviews(decision, reason, created_at)))
        )`,
     )
     .order("created_at", { ascending: false });
@@ -112,7 +121,13 @@ export async function getWorkspaceCases(): Promise<CaseView[]> {
         .sort((a, b) => a.position - b.position)
         .map((r) => {
           const derived = deriveState(r as RawRequirement);
-          return { id: r.id, label: r.label, state: derived.state, rejectionReason: derived.rejectionReason };
+          return {
+            id: r.id,
+            label: r.label,
+            state: derived.state,
+            rejectionReason: derived.rejectionReason,
+            documentId: derived.documentId,
+          };
         }),
     })),
   }));

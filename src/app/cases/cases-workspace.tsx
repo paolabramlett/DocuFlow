@@ -6,10 +6,12 @@
  */
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { AppShell, type ShellAccount } from "@/components/app-shell";
 import { IconCheck, IconClock, IconDot, IconEye, IconPlus, IconSearch, IconX, type IconProps } from "@/components/icons";
 import type { CaseView, OperativeCounts, ParticipantView, ReqDisplayState, RequirementView } from "@/features/cases/queries";
+import { reviewDocumentAction } from "./actions";
 
 const REQ: Record<ReqDisplayState, { label: string; fg: string; bg: string; bar: string; Icon: (p: IconProps) => React.ReactElement }> = {
   approved: { label: "Aprobado", fg: "text-success", bg: "bg-success-bg", bar: "bg-success", Icon: IconCheck },
@@ -166,18 +168,98 @@ function ParticipantColumn({ p }: { p: ParticipantView }) {
         </div>
       </div>
       <ul className="flex-1">
-        {p.requirements.map((r) => {
-          const m = REQ[r.state];
-          return (
-            <li key={r.id} className="flex items-center gap-3 border-b border-border px-5 py-3 last:border-b-0">
-              <span className={`flex size-6 shrink-0 items-center justify-center rounded-full ${m.bg} ${m.fg}`}><m.Icon className="size-3.5" /></span>
-              <span className="flex-1 text-sm text-text-primary">{r.label}</span>
-              <span className={`text-xs font-medium ${m.fg}`}>{m.label}</span>
-            </li>
-          );
-        })}
+        {p.requirements.map((r) => <RequirementRow key={r.id} r={r} />)}
       </ul>
     </div>
+  );
+}
+
+function RequirementRow({ r }: { r: RequirementView }) {
+  const m = REQ[r.state];
+  const [busy, setBusy] = useState<"approve" | "reject" | null>(null);
+  const [rejecting, setRejecting] = useState(false);
+  const [reason, setReason] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const router = useRouter();
+
+  async function approve() {
+    if (!r.documentId) return;
+    setBusy("approve");
+    setError(null);
+    const result = await reviewDocumentAction({ documentId: r.documentId, decision: "approved" });
+    setBusy(null);
+    if (!result.ok) { setError(result.message); return; }
+    router.refresh();
+  }
+
+  async function reject() {
+    if (!r.documentId || !reason.trim()) return;
+    setBusy("reject");
+    setError(null);
+    const result = await reviewDocumentAction({ documentId: r.documentId, decision: "rejected", reason });
+    setBusy(null);
+    if (!result.ok) { setError(result.message); return; }
+    setRejecting(false);
+    setReason("");
+    router.refresh();
+  }
+
+  return (
+    <li className="border-b border-border px-5 py-3 last:border-b-0">
+      <div className="flex items-center gap-3">
+        <span className={`flex size-6 shrink-0 items-center justify-center rounded-full ${m.bg} ${m.fg}`}><m.Icon className="size-3.5" /></span>
+        <span className="flex-1 text-sm text-text-primary">{r.label}</span>
+        {r.state === "review" && r.documentId ? (
+          <div className="flex items-center gap-1.5">
+            <button
+              onClick={approve}
+              disabled={busy !== null}
+              className="rounded-input bg-success px-2.5 py-1 text-xs font-semibold text-white transition-colors hover:bg-success/90 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {busy === "approve" ? "Aprobando…" : "Aprobar"}
+            </button>
+            <button
+              onClick={() => setRejecting((v) => !v)}
+              disabled={busy !== null}
+              className="rounded-input border border-error/30 bg-error-bg px-2.5 py-1 text-xs font-semibold text-error transition-colors hover:bg-error/10 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Rechazar
+            </button>
+          </div>
+        ) : (
+          <span className={`text-xs font-medium ${m.fg}`}>{m.label}</span>
+        )}
+      </div>
+
+      {rejecting && (
+        <div className="mt-2.5 rounded-input border border-error/20 bg-error-bg/40 p-3">
+          <label className="block">
+            <span className="mb-1 block text-xs font-medium text-text-primary">Motivo del rechazo (el cliente lo verá)</span>
+            <textarea
+              value={reason}
+              onChange={(e) => setReason(e.target.value)}
+              rows={2}
+              placeholder="ej. Falta la segunda página del documento."
+              className="w-full rounded-input border border-border bg-surface px-2.5 py-1.5 text-sm text-text-primary outline-none focus:border-error focus:ring-2 focus:ring-error/15"
+            />
+          </label>
+          <div className="mt-2 flex items-center gap-2">
+            <button
+              onClick={reject}
+              disabled={busy !== null || !reason.trim()}
+              className="rounded-input bg-error px-3 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-error/90 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {busy === "reject" ? "Enviando…" : "Confirmar rechazo"}
+            </button>
+            <button onClick={() => { setRejecting(false); setReason(""); }} className="text-xs font-medium text-text-secondary hover:text-text-primary">
+              Cancelar
+            </button>
+          </div>
+        </div>
+      )}
+
+      {error && <p className="mt-1.5 text-xs text-error">{error}</p>}
+    </li>
   );
 }
 

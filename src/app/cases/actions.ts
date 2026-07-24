@@ -1,0 +1,63 @@
+"use server";
+
+/*
+ * Server Actions for Cases.
+ *
+ * Deliberately thin: authenticate, delegate to an application use case, revalidate, return a
+ * typed result. No business logic lives here — that is in src/application/*, so a script, a
+ * future API, or a different UI gets identical behaviour.
+ *
+ * Server Actions are reachable by direct POST, not only through our UI, so every one of them
+ * re-establishes the caller's identity rather than trusting anything from the client.
+ */
+
+import { revalidatePath } from "next/cache";
+import { getStaffContext } from "@/features/auth/context";
+import { createClient } from "@/lib/supabase/server";
+import { fail, ok, type ActionResult } from "@/application/errors";
+import {
+  createCaseWithParticipants,
+  type CreateCaseWithParticipantsInput,
+  type CreatedCase,
+} from "@/application/create-case-with-participants";
+import { reviewDocument, type ReviewDocumentInput } from "@/application/review-document";
+
+export async function createCaseAction(
+  input: Omit<CreateCaseWithParticipantsInput, "organizationId">,
+): Promise<ActionResult<CreatedCase>> {
+  try {
+    const staff = await getStaffContext();
+    if (!staff) {
+      return { ok: false, reason: "unauthenticated", message: "Tu sesión expiró. Inicia sesión de nuevo." };
+    }
+
+    const supabase = await createClient();
+    const result = await createCaseWithParticipants(
+      supabase,
+      { ...input, organizationId: staff.organizationId },
+      staff.userId,
+    );
+
+    revalidatePath("/cases");
+    return ok(result);
+  } catch (error) {
+    return fail(error);
+  }
+}
+
+export async function reviewDocumentAction(input: ReviewDocumentInput): Promise<ActionResult<null>> {
+  try {
+    const staff = await getStaffContext();
+    if (!staff) {
+      return { ok: false, reason: "unauthenticated", message: "Tu sesión expiró. Inicia sesión de nuevo." };
+    }
+
+    const supabase = await createClient();
+    await reviewDocument(supabase, input, staff.userId);
+
+    revalidatePath("/cases");
+    return ok(null);
+  } catch (error) {
+    return fail(error);
+  }
+}

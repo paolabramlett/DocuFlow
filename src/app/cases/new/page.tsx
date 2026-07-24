@@ -8,8 +8,12 @@
  */
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useMemo, useState } from "react";
 import { AppShell } from "@/components/app-shell";
+import { createCaseAction } from "../actions";
+import type { CreatedCase } from "@/application/create-case-with-participants";
+import type { FailureReason } from "@/application/errors";
 import {
   IconArrowLeft,
   IconArrowRight,
@@ -18,7 +22,14 @@ import {
   IconMail,
   IconPlus,
   IconTrash,
+  IconX,
 } from "@/components/icons";
+
+interface ActionFailure {
+  reason: FailureReason;
+  message: string;
+  issues?: readonly { path: string; message: string }[];
+}
 
 type Blueprint = {
   id: string;
@@ -87,6 +98,39 @@ export default function NewCasePage() {
   const [title, setTitle] = useState("");
   const [participants, setParticipants] = useState<Participant[]>([]);
   const [sent, setSent] = useState(false);
+  const [pending, setPending] = useState(false);
+  const [failure, setFailure] = useState<ActionFailure | null>(null);
+  const [result, setResult] = useState<CreatedCase | null>(null);
+  const router = useRouter();
+
+  async function submit() {
+    setPending(true);
+    setFailure(null);
+
+    const response = await createCaseAction({
+      title,
+      // A blank case sends no blueprint; the wizard's demo blueprints are not yet real rows.
+      participants: participants.map((p) => ({
+        roleLabel: p.role,
+        fullName: p.name,
+        email: p.email,
+        requirements: p.requirements,
+      })),
+      sendInvitations: true,
+    });
+
+    setPending(false);
+
+    if (!response.ok) {
+      setFailure({ reason: response.reason, message: response.message, issues: response.issues });
+      return;
+    }
+
+    setResult(response.data);
+    setSent(true);
+    // The new Case is now real; refresh the workspace behind this flow.
+    router.refresh();
+  }
 
   const blueprint = useMemo(
     () => (blueprintId === "blank" ? BLANK : BLUEPRINTS.find((b) => b.id === blueprintId) ?? null),
@@ -139,10 +183,11 @@ export default function NewCasePage() {
       {/* Body */}
       <div className="flex-1 overflow-y-auto px-7 py-8">
         <div className="mx-auto max-w-4xl">
-          {sent ? (
-            <SentState participants={participants} />
+          {sent && result ? (
+            <SentState result={result} />
           ) : (
             <>
+              {failure && <FailureBanner failure={failure} onDismiss={() => setFailure(null)} />}
               {step === 0 && <StepBlueprint selected={blueprintId} onChoose={chooseBlueprint} />}
               {step === 1 && blueprint && (
                 <StepParticipants
@@ -181,10 +226,11 @@ export default function NewCasePage() {
               </button>
             ) : (
               <button
-                onClick={() => setSent(true)}
-                className="flex items-center gap-2 rounded-input bg-royal-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-royal-700"
+                onClick={submit}
+                disabled={pending}
+                className="flex items-center gap-2 rounded-input bg-royal-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-royal-700 disabled:cursor-not-allowed disabled:opacity-60"
               >
-                <IconMail className="size-4" /> Enviar invitaciones
+                <IconMail className="size-4" /> {pending ? "Creando expediente…" : "Enviar invitaciones"}
               </button>
             )}
           </div>
@@ -423,27 +469,94 @@ function StepReview({ title, blueprint, participants }: { title: string; bluepri
   );
 }
 
+// ---------- Dedicated failure states ----------
+/**
+ * One state per failure reason, so the user is told what actually happened and what to do — never
+ * a generic "something went wrong".
+ */
+function FailureBanner({ failure, onDismiss }: { failure: ActionFailure; onDismiss: () => void }) {
+  const COPY: Record<FailureReason, { title: string; hint: string }> = {
+    unauthenticated: { title: "Tu sesión expiró", hint: "Inicia sesión de nuevo para continuar. No perdiste lo que capturaste." },
+    forbidden: { title: "No tienes acceso", hint: "Tu cuenta no puede crear expedientes en esta organización." },
+    validation: { title: "Revisa los datos", hint: "Corrige lo señalado y vuelve a intentar." },
+    not_found: { title: "No encontramos algo", hint: "Puede que se haya eliminado mientras trabajabas. Recarga e intenta de nuevo." },
+    conflict: { title: "Ya existe", hint: "Parece que este expediente ya fue creado." },
+    delivery_failed: { title: "No pudimos enviar las invitaciones", hint: "El expediente se creó; puedes reenviarlas desde el expediente." },
+    unexpected: { title: "Algo falló", hint: "Vuelve a intentarlo en un momento." },
+  };
+  const copy = COPY[failure.reason];
+
+  return (
+    <div className="mb-6 rounded-card border border-error/25 bg-error-bg/60 px-5 py-4">
+      <div className="flex items-start gap-3">
+        <span className="mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-full bg-error text-white">
+          <IconX className="size-3.5" />
+        </span>
+        <div className="min-w-0 flex-1">
+          <div className="text-sm font-semibold text-text-primary">{copy.title}</div>
+          <p className="mt-0.5 text-sm text-text-secondary">{failure.message || copy.hint}</p>
+          {failure.issues && failure.issues.length > 0 && (
+            <ul className="mt-2 space-y-1">
+              {failure.issues.map((issue, i) => (
+                <li key={i} className="text-sm text-error">• {issue.message}</li>
+              ))}
+            </ul>
+          )}
+          {failure.reason === "unauthenticated" && (
+            <Link href="/login" className="mt-3 inline-flex rounded-input bg-royal-600 px-3.5 py-2 text-sm font-semibold text-white transition-colors hover:bg-royal-700">
+              Iniciar sesión
+            </Link>
+          )}
+        </div>
+        <button onClick={onDismiss} className="shrink-0 rounded-input p-1 text-text-secondary transition-colors hover:bg-surface hover:text-text-primary">
+          <IconX className="size-4" />
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // ---------- Sent ----------
-function SentState({ participants }: { participants: Participant[] }) {
+function SentState({ result }: { result: CreatedCase }) {
+  const invited = result.participants.filter((p) => p.invited);
+  const failed = result.invitationFailures;
+
   return (
     <div className="mx-auto max-w-lg py-10 text-center">
       <div className="complete-check mx-auto flex size-16 items-center justify-center rounded-full bg-royal-600 text-white">
         <IconMail className="size-8" />
       </div>
       <div className="complete-rise">
-        <h1 className="mt-6 text-2xl font-semibold tracking-tight text-text-primary">Invitaciones enviadas</h1>
+        <h1 className="mt-6 text-2xl font-semibold tracking-tight text-text-primary">
+          {failed.length === 0 ? "Invitaciones enviadas" : "Expediente creado"}
+        </h1>
         <p className="mx-auto mt-2 max-w-sm text-sm leading-relaxed text-text-secondary">
-          {participants.length} participante{participants.length > 1 ? "s" : ""} {participants.length > 1 ? "recibirán" : "recibirá"} un código de un solo uso para subir sus documentos. El expediente avanza solo conforme cada uno se aprueba.
+          {invited.length > 0 ? (
+            <>
+              {invited.length} participante{invited.length > 1 ? "s" : ""} {invited.length > 1 ? "recibirán" : "recibirá"} un
+              código de un solo uso para subir sus documentos. El expediente avanza solo conforme cada uno se aprueba.
+            </>
+          ) : (
+            <>El expediente se creó. Puedes enviar las invitaciones desde el expediente.</>
+          )}
         </p>
+
         <div className="mt-6 space-y-2 text-left">
-          {participants.map((p) => (
+          {result.participants.map((p) => (
             <div key={p.id} className="flex items-center gap-3 rounded-input border border-border bg-surface px-4 py-2.5">
-              <IconCheck className="size-4 text-success" />
+              {p.invited ? <IconCheck className="size-4 text-success" /> : <IconX className="size-4 text-warning" />}
               <span className="text-sm text-text-primary">{p.email}</span>
               <span className="ml-auto text-xs text-text-secondary">{p.role}</span>
             </div>
           ))}
         </div>
+
+        {failed.length > 0 && (
+          <p className="mt-3 text-left text-sm text-warning">
+            No pudimos enviar {failed.length} invitación{failed.length > 1 ? "es" : ""}. Puedes reintentarlo desde el expediente.
+          </p>
+        )}
+
         <Link href="/cases" className="mt-6 inline-flex items-center gap-2 rounded-input bg-royal-600 px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-royal-700">
           Ir al expediente
         </Link>

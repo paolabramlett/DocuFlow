@@ -10,18 +10,19 @@ export interface StaffContext {
 }
 
 /**
- * Resolves the signed-in staff member and their active Organization, or redirects to /login.
+ * Resolves the signed-in staff member and their active Organization, or null.
  *
  * Reads membership through RLS as the caller — so it can only ever report an Organization the
  * user actually belongs to. Uses the first membership; multi-org switching is a later concern.
+ * Server Actions use this (they surface an error rather than redirect); pages use requireStaff.
  */
-export async function requireStaff(): Promise<StaffContext> {
+export async function getStaffContext(): Promise<StaffContext | null> {
   const supabase = await createClient();
 
   const {
     data: { user },
   } = await supabase.auth.getUser();
-  if (!user) redirect("/login");
+  if (!user) return null;
 
   const { data: membership } = await supabase
     .from("members")
@@ -29,14 +30,20 @@ export async function requireStaff(): Promise<StaffContext> {
     .limit(1)
     .maybeSingle();
 
-  if (!membership?.organization) redirect("/login");
+  if (!membership?.organization) return null;
 
-  const role = membership.role === "owner" ? "owner" : "staff";
   return {
     userId: user.id,
     email: user.email ?? "",
     organizationId: membership.organization.id,
     organizationName: membership.organization.name,
-    role,
+    role: membership.role === "owner" ? "owner" : "staff",
   };
+}
+
+/** Page guard: resolves the staff context or redirects to /login. */
+export async function requireStaff(): Promise<StaffContext> {
+  const context = await getStaffContext();
+  if (!context) redirect("/login");
+  return context;
 }
