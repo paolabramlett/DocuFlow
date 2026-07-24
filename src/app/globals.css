@@ -1,26 +1,136 @@
 @import "tailwindcss";
 
+/*
+ * DocuFlow design tokens — modern premium operational workspace (see DESIGN.md).
+ * Cool-blue canvas, crisp white surfaces, royal-blue brand for nav + actions,
+ * strictly-semantic state colors, soft contemporary radii, subtle cool shadows.
+ */
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  /* Royal blue — brand: navigation + actions */
+  --royal-700: #243dbd;
+  --royal-600: #3151d3;
+  --royal-500: #4667e8;
+  --royal-100: #dde5ff;
+  --royal-50: #f1f4ff;
+
+  /* Neutrals */
+  --app-bg: #f5f7ff; /* canvas */
+  --surface: #ffffff; /* cards, panels */
+  --text-primary: #172033;
+  --text-secondary: #667085;
+  --border: #e4e8f1;
+
+  /* Semantic state — reserved, never brand */
+  --success: #1f9d69;
+  --warning: #d99116;
+  --error: #d94b5b;
+  --info: #4b73e8;
+  /* Review — deliberately slate, so it never competes with the royal brand */
+  --review: #6b7ae6;
+  --neutral: #98a2b3; /* not started / missing */
+
+  /* Soft, cool-toned tints for state pills */
+  --success-bg: #e4f4ec;
+  --warning-bg: #f9efd9;
+  --error-bg: #fae5e8;
+  --info-bg: #e7edfd;
+  --review-bg: #ecedfa;
+  --neutral-bg: #f1f3f7;
+
+  /* Contemporary radii */
+  --radius-input: 11px;
+  --radius-card: 15px;
+  --radius-panel: 19px;
+
+  /* Subtle cool-toned elevation */
+  --shadow-sm: 0 1px 2px rgba(23, 32, 51, 0.04), 0 1px 3px rgba(36, 61, 189, 0.04);
+  --shadow-md: 0 2px 4px rgba(23, 32, 51, 0.04), 0 8px 20px rgba(36, 61, 189, 0.06);
+  --shadow-lg: 0 12px 32px rgba(36, 61, 189, 0.1);
 }
 
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
+  --color-royal-700: var(--royal-700);
+  --color-royal-600: var(--royal-600);
+  --color-royal-500: var(--royal-500);
+  --color-royal-100: var(--royal-100);
+  --color-royal-50: var(--royal-50);
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+  --color-app-bg: var(--app-bg);
+  --color-surface: var(--surface);
+  --color-text-primary: var(--text-primary);
+  --color-text-secondary: var(--text-secondary);
+  --color-border: var(--border);
+
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-error: var(--error);
+  --color-info: var(--info);
+  --color-review: var(--review);
+  --color-neutral: var(--neutral);
+  --color-success-bg: var(--success-bg);
+  --color-warning-bg: var(--warning-bg);
+  --color-error-bg: var(--error-bg);
+  --color-info-bg: var(--info-bg);
+  --color-review-bg: var(--review-bg);
+  --color-neutral-bg: var(--neutral-bg);
+
+  --radius-input: var(--radius-input);
+  --radius-card: var(--radius-card);
+  --radius-panel: var(--radius-panel);
+
+  --shadow-sm: var(--shadow-sm);
+  --shadow-md: var(--shadow-md);
+  --shadow-lg: var(--shadow-lg);
+
+  --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, monospace;
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background: var(--app-bg);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Completion moment — clean, not celebratory. Exponential ease-out from visible. */
+@keyframes complete-check {
+  0% {
+    transform: scale(0.6);
+    opacity: 0;
+  }
+  60% {
+    transform: scale(1.06);
+  }
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+@keyframes complete-rise {
+  0% {
+    transform: translateY(10px);
+    opacity: 0;
+  }
+  100% {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+.complete-check {
+  animation: complete-check 0.5s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+.complete-rise {
+  animation: complete-rise 0.5s cubic-bezier(0.16, 1, 0.3, 1) both;
+  animation-delay: 0.15s;
+}
+@media (prefers-reduced-motion: reduce) {
+  .complete-check,
+  .complete-rise {
+    animation: none;
+  }
 }
