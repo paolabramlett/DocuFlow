@@ -60,3 +60,12 @@ export const IconMail = (p: IconProps) => (
 export const IconDocument = (p: IconProps) => (
   <svg viewBox="0 0 24 24" className={p.className} {...s}><path d="M7 3h7l5 5v13a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1Z" /><path d="M14 3v5h5" /></svg>
 );
+export const IconUpload = (p: IconProps) => (
+  <svg viewBox="0 0 24 24" className={p.className} {...s}><path d="M12 15V4M8 8l4-4 4 4M4 15v4a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-4" /></svg>
+);
+export const IconShield = (p: IconProps) => (
+  <svg viewBox="0 0 24 24" className={p.className} {...s}><path d="M12 3l7 3v6c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6l7-3Z" /><path d="m9 12 2 2 4-4" /></svg>
+);
+export const IconRefresh = (p: IconProps) => (
+  <svg viewBox="0 0 24 24" className={p.className} {...s}><path d="M21 12a9 9 0 1 1-3-6.7L21 8M21 4v4h-4" /></svg>
+);
