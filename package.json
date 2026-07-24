@@ -12,6 +12,7 @@
     "db:stop": "supabase stop",
     "db:reset": "supabase db reset",
     "db:env": "node scripts/write-env.mjs",
+    "db:seed": "node scripts/seed-demo.mjs",
     "db:types": "supabase gen types typescript --local > src/types/database.ts",
     "test": "vitest run",
     "test:watch": "vitest"
