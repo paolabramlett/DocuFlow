@@ -28,6 +28,9 @@ export const uploadDocumentSchema = z.object({
     .int()
     .positive()
     .max(MAX_DOCUMENT_BYTES, `Files must be ${MAX_DOCUMENT_BYTES / (1024 * 1024)} MiB or smaller`),
+  /** Precomputed by a caller that must know the storage path before this insert — e.g. to create
+   *  a signed upload URL first. Defaults to a fresh id when omitted. */
+  documentId: z.string().uuid().optional(),
 });
 
 export type UploadDocumentInput = z.infer<typeof uploadDocumentSchema>;

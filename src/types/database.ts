@@ -171,6 +171,10 @@ export type Database = {
           created_at: string
           expires_at: string | null
           id: string
+          invitation_expires_at: string
+          invitation_last_error: string | null
+          invitation_sent_at: string | null
+          invitation_status: string
           invitation_token_hash: string
           invited_email: string
           organization_id: string
@@ -189,6 +193,10 @@ export type Database = {
           created_at?: string
           expires_at?: string | null
           id?: string
+          invitation_expires_at?: string
+          invitation_last_error?: string | null
+          invitation_sent_at?: string | null
+          invitation_status?: string
           invitation_token_hash: string
           invited_email: string
           organization_id: string
@@ -207,6 +215,10 @@ export type Database = {
           created_at?: string
           expires_at?: string | null
           id?: string
+          invitation_expires_at?: string
+          invitation_last_error?: string | null
+          invitation_sent_at?: string | null
+          invitation_status?: string
           invitation_token_hash?: string
           invited_email?: string
           organization_id?: string

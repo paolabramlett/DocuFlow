@@ -25,6 +25,7 @@ export type InvitationFailure =
   | 'invalid_token'
   | 'already_verified'
   | 'revoked'
+  | 'expired'
   | 'cooldown'
   | 'locked'
   | 'invalid_code';
@@ -128,28 +129,42 @@ interface PendingGrant {
   readonly otp_last_sent_at: string | null;
   readonly otp_failed_attempts: number;
   readonly otp_locked_until: string | null;
+  readonly invitation_status: string;
+  readonly invitation_expires_at: string;
 }
 
 /**
- * Reads a grant by token hash.
+ * Reads a grant by token hash and enforces the invitation delivery lifecycle.
  *
  * Uses the admin client because there is no authenticated principal yet — the visitor is holding
  * a token and nothing else. That makes this function the tenant boundary for the whole
  * unauthenticated flow, so it takes no organization, case, or email from the caller: the only
  * input is the token, and every field returned is derived from the matched row.
+ *
+ * "Expired" is never stored — it is derived here, at read time, from invitation_expires_at,
+ * exactly like grant activity and reminder eligibility elsewhere in the system. A pre-acceptance
+ * invitation past its deadline is refused the same way regardless of which caller checks it.
  */
 async function findGrantByToken(admin: AdminClient, token: string): Promise<PendingGrant> {
   const { data, error } = await admin
     .from('case_access_grants')
     .select(
-      'id, organization_id, case_id, participant_id, invited_email, verified_at, revoked_at, otp_last_sent_at, otp_failed_attempts, otp_locked_until',
+      'id, organization_id, case_id, participant_id, invited_email, verified_at, revoked_at, otp_last_sent_at, otp_failed_attempts, otp_locked_until, invitation_status, invitation_expires_at',
     )
     .eq('invitation_token_hash', hashInvitationToken(token))
     .maybeSingle();
 
   if (error) throw new Error(`Could not read invitation: ${error.message}`);
   if (!data) throw new InvitationError('invalid_token', 'This invitation is not valid');
-  if (data.revoked_at) throw new InvitationError('revoked', 'This invitation is no longer valid');
+  if (data.invitation_status === 'revoked') {
+    throw new InvitationError('revoked', 'This invitation is no longer valid');
+  }
+  if (
+    data.invitation_status !== 'accepted' &&
+    Date.parse(data.invitation_expires_at) < Date.now()
+  ) {
+    throw new InvitationError('expired', 'This invitation has expired');
+  }
 
   return data;
 }
@@ -212,12 +227,34 @@ export async function sendInvitationOtp(
   });
 
   if (error) {
+    // Delivery failure is a first-class transition, not a bare exception: 'failed' is stored so
+    // a retry (calling this function again) is an ordinary next step, not special-case recovery.
+    await admin
+      .from('case_access_grants')
+      .update({ invitation_status: 'failed', invitation_last_error: error.message.slice(0, 500) })
+      .eq('id', grant.id);
+
+    await recordAuditEvent(admin, {
+      organizationId: grant.organization_id,
+      caseId: grant.case_id,
+      action: 'grant.otp_sent',
+      targetType: 'case_access_grant',
+      targetId: grant.id,
+      actor: { kind: 'system' },
+      metadata: { delivered: false },
+    });
+
     throw new Error(`Could not send passcode: ${error.message}`);
   }
 
   await admin
     .from('case_access_grants')
-    .update({ otp_last_sent_at: new Date().toISOString() })
+    .update({
+      otp_last_sent_at: new Date().toISOString(),
+      invitation_status: 'sent',
+      invitation_sent_at: new Date().toISOString(),
+      invitation_last_error: null,
+    })
     .eq('id', grant.id);
 
   await recordAuditEvent(admin, {
@@ -227,6 +264,7 @@ export async function sendInvitationOtp(
     targetType: 'case_access_grant',
     targetId: grant.id,
     actor: { kind: 'system' },
+    metadata: { delivered: true },
   });
 
   return { sent: true };
@@ -315,6 +353,52 @@ export async function verifyInvitationOtp(
     caseId: grant.case_id,
     organizationId: grant.organization_id,
     authUserId,
+  };
+}
+
+export interface MyGrant {
+  readonly grantId: string;
+  readonly organizationId: string;
+  readonly caseId: string;
+  readonly participantId: string;
+  readonly permission: string;
+  /** Verified, not revoked, not expired, and permission above 'none' — the same test as the DB resolver. */
+  readonly isActive: boolean;
+}
+
+/**
+ * Resolves the invitation's grant for the *authenticated* caller — "resolve active grant" in the
+ * client journey, run after OTP verification rather than before it.
+ *
+ * Unlike findGrantByToken, this runs with the caller's own session, not the admin client: RLS
+ * (`organization_id in member_org_ids() OR auth_user_id = auth.uid()`) means a Client can only
+ * ever get back a grant that is actually theirs. A stale or forwarded token belonging to someone
+ * else resolves to nothing here, the same as it would to anyone else querying the table directly.
+ */
+export async function resolveMyGrant(client: DbClient, token: string): Promise<MyGrant | null> {
+  const { data, error } = await client
+    .from('case_access_grants')
+    .select('id, organization_id, case_id, participant_id, permission, verified_at, revoked_at, expires_at')
+    .eq('invitation_token_hash', hashInvitationToken(token))
+    .maybeSingle();
+
+  if (error) throw new Error(`Could not resolve grant: ${error.message}`);
+  if (!data) return null;
+
+  const isActive =
+    data.verified_at !== null &&
+    data.revoked_at === null &&
+    data.expires_at !== null &&
+    Date.parse(data.expires_at) > Date.now() &&
+    data.permission !== 'none';
+
+  return {
+    grantId: data.id,
+    organizationId: data.organization_id,
+    caseId: data.case_id,
+    participantId: data.participant_id,
+    permission: data.permission,
+    isActive,
   };
 }
 

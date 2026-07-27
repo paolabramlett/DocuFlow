@@ -12,6 +12,7 @@
  */
 import { createClient } from "@supabase/supabase-js";
 import { config } from "dotenv";
+import { createHash, randomBytes } from "node:crypto";
 
 config({ path: ".env.local", quiet: true });
 
@@ -94,6 +95,7 @@ async function main() {
       completed_at: state === "completed" ? new Date().toISOString() : null,
     });
 
+    const createdParticipants = [];
     for (const p of participants) {
       const part = await insert("case_participants", {
         organization_id: org.id,
@@ -101,6 +103,7 @@ async function main() {
         client_id: p.clientId,
         role_label: p.role,
       });
+      createdParticipants.push({ participantId: part.id, clientId: p.clientId, role: p.role });
 
       let position = 0;
       for (const r of p.requirements) {
@@ -144,10 +147,17 @@ async function main() {
         }
       }
     }
-    return c;
+    return { ...c, participants: createdParticipants };
   }
 
-  await createCase({
+  /** Mirrors src/features/case-access/tokens.ts — the seed writes directly, no domain import. */
+  function issueInvitation({ organizationId, caseId, participantId, invitedEmail }) {
+    const token = randomBytes(32).toString("base64url");
+    const hash = createHash("sha256").update(token, "utf8").digest("hex");
+    return { token, hash, organizationId, caseId, participantId, invitedEmail };
+  }
+
+  const restrepoCase = await createCase({
     title: "Compraventa · Restrepo",
     primaryClientId: paola.id,
     participants: [
@@ -164,6 +174,28 @@ async function main() {
         { label: "Título de propiedad", state: "missing" },
       ]},
     ],
+  });
+
+  // A real, usable invitation for Mateo — he has an approved item, a rejected one (with a
+  // reason), and a pending one, so the portal's whole journey (upload / re-upload / quiet
+  // approved section) is exercisable against real data. Issued directly, mirroring
+  // issueInvitation() in src/features/case-access/invitations.ts.
+  const mateoParticipant = restrepoCase.participants.find((p) => p.clientId === mateo.id);
+  const invitation = issueInvitation({
+    organizationId: org.id,
+    caseId: restrepoCase.id,
+    participantId: mateoParticipant.participantId,
+    // The insert() helper only selects `id` by default, so `mateo` carries no email — this must
+    // match the literal used when the client row was created above.
+    invitedEmail: "mateo.restrepo@example.mx",
+  });
+  await insert("case_access_grants", {
+    organization_id: invitation.organizationId,
+    case_id: invitation.caseId,
+    participant_id: invitation.participantId,
+    invited_email: invitation.invitedEmail,
+    invitation_token_hash: invitation.hash,
+    permission: "upload",
   });
 
   await createCase({
@@ -194,6 +226,8 @@ async function main() {
   console.log("Seeded demo data.");
   console.log(`  Staff login: ${STAFF_EMAIL} / ${STAFF_PASSWORD}`);
   console.log(`  Organization: Notaría Central (${org.id})`);
+  console.log(`  Client portal (Mateo Restrepo): http://localhost:3000/portal/${invitation.token}`);
+  console.log(`    Invited email: ${invitation.invitedEmail} — check Mailpit at http://127.0.0.1:54424 for the code`);
 }
 
 main();

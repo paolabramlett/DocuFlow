@@ -33,12 +33,10 @@ export async function registerDocument(
   input: UploadDocumentInput,
   actor: AuditActor,
 ): Promise<UploadedDocument> {
-  const { organizationId, caseId, requirementId, fileName, contentType, sizeBytes } = parseInput(
-    uploadDocumentSchema,
-    input,
-  );
+  const { organizationId, caseId, requirementId, fileName, contentType, sizeBytes, documentId: providedId } =
+    parseInput(uploadDocumentSchema, input);
 
-  const documentId = randomUUID();
+  const documentId = providedId ?? randomUUID();
   const storagePath = documentObjectPath({
     organizationId,
     caseId,

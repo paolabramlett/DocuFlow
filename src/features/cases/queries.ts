@@ -75,9 +75,12 @@ function deriveState(
 
   if (r.status === "satisfied") return { state: "approved", documentId: latestDocument?.id };
 
-  const latestReview = r.documents
-    .flatMap((d) => d.reviews)
-    .sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at))[0];
+  // Scoped to the latest Document's own reviews — a rejected review on a superseded Document must
+  // never keep outvoting a newer, not-yet-reviewed re-upload (that re-upload has no reviews at
+  // all, so comparing across all Documents would always find the old rejection "latest").
+  const latestReview = [...(latestDocument?.reviews ?? [])].sort(
+    (a, b) => Date.parse(b.created_at) - Date.parse(a.created_at),
+  )[0];
 
   if (latestReview?.decision === "rejected") {
     return { state: "rejected", rejectionReason: latestReview.reason ?? undefined, documentId: latestDocument?.id };
