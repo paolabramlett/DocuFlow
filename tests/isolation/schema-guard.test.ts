@@ -102,10 +102,10 @@ describe('schema guards', () => {
       from pg_proc p
       join pg_namespace n on n.oid = p.pronamespace
       where n.nspname = 'app'
-        and p.proname in ('member_org_ids', 'granted_case_ids', 'is_org_owner')
+        and p.proname in ('member_org_ids', 'granted_case_ids', 'is_org_owner', 'org_members_with_email')
     `);
 
-    expect(rows).toHaveLength(3);
+    expect(rows).toHaveLength(4);
     for (const row of rows) {
       expect(row.provolatile).toBe('s');
     }
