@@ -44,7 +44,7 @@ export async function getClientsDirectory(
 
   if (error) {
     // Permission denied returns empty array; other errors throw
-    if (error.message.includes('permission denied')) {
+    if (error.code === '42501') {
       return [];
     }
     throw new Error(`getClientsDirectory: ${error.message}`);
