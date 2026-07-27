@@ -52,3 +52,7 @@ supabase/.branches/
 # tooling (OpenSpec) and stays tracked.
 .claude/skills/
 .claude/settings.local.json
+
+# superpowers subagent-driven-development scratch: progress ledger, task briefs/reports, review
+# packages. Local bookkeeping for one session's execution, not project state.
+.superpowers/
