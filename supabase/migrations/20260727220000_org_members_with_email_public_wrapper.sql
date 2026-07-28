@@ -11,4 +11,5 @@ as $$
   from app.org_members_with_email(target_organization_id)
 $$;
 
+revoke all on function public.org_members_with_email(uuid) from public;
 grant execute on function public.org_members_with_email(uuid) to authenticated;
