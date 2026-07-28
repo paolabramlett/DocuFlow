@@ -26,7 +26,9 @@ export default function ForgotPasswordPage() {
       // Supabase's resetPasswordForEmail already never reveals whether the address exists — an
       // error here is a genuine operational failure (network, rate limit, misconfiguration), not
       // "email not found", so it gets its own distinct message rather than folding into the
-      // neutral success text below.
+      // neutral success text below. Logged internally so a real outage is visible; never shown
+      // to the user in a way that could reveal account existence.
+      console.error("resetPasswordForEmail failed", { message: resetError.message });
       setError("No pudimos procesar tu solicitud. Inténtalo de nuevo en unos minutos.");
       return;
     }
