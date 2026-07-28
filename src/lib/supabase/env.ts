@@ -9,6 +9,7 @@ function required(name: string): string {
 export const SUPABASE_URL = required('NEXT_PUBLIC_SUPABASE_URL');
 export const SUPABASE_ANON_KEY = required('NEXT_PUBLIC_SUPABASE_ANON_KEY');
 export const RESEND_API_KEY = required('RESEND_API_KEY');
+export const APP_ORIGIN = required('APP_ORIGIN');
 
 /**
  * Reads the service role key, and refuses to do so anywhere a browser could reach.
