@@ -69,8 +69,9 @@ inviteMember
 ├─ Identity already existed
 │   ├─ Check existing membership (organization_id, invitedAuthUser.id) — conflict if found
 │   ├─ Insert membership through the RLS-scoped client
-│   ├─ Send a DocuFlow membership-notification email directly via Resend (best-effort)
-│   └─ Log member.added, actor = actorUser, target = the new members row
+│   ├─ Log member.added, actor = actorUser, target = the new members row
+│   └─ Send a DocuFlow membership-notification email directly via Resend (best-effort, last —
+│       a slow external call must never delay the domain event it's describing)
 │
 └─ Identity newly created
     ├─ admin.auth.admin.inviteUserByEmail(normalizedEmail, { redirectTo: `${APP_ORIGIN}/set-password` })
@@ -116,10 +117,13 @@ Steps in detail:
     the identical `UseCaseError('conflict', ...)` as a backstop, not a second code path with
     different copy.
 
-    Once inserted, send a DocuFlow-branded notification (see "Existing-identity notification"
-    below) — **best-effort**: wrap in try/catch, log a failure to the server console, never let a
-    notification failure fail the membership itself (same principle `logDomainEvent` already
-    follows for audit events — the row is the source of truth, not the email).
+    Log the domain event (step 5 below) immediately after the insert succeeds — before sending
+    anything. Only then send the DocuFlow-branded notification (see "Existing-identity
+    notification" below) — **best-effort**, last in the sequence: wrap in try/catch, log a failure
+    to the server console, never let a notification failure fail the membership itself (same
+    principle `logDomainEvent` already follows for audit events — the row is the source of truth,
+    not the email — but the row's own event record should never wait on an external HTTP call
+    either).
 
 4b. **New identity branch.** `admin.auth.admin.inviteUserByEmail(normalizedEmail, { redirectTo:
     \`${APP_ORIGIN}/set-password\` })` — creates the `auth.users` row and sends Supabase's own
@@ -129,11 +133,22 @@ Steps in detail:
     catch as the real guard). **If the membership insert fails for any reason** (constraint
     violation from something unforeseen, RLS mismatch, connection failure, the organization itself
     having been deleted mid-request): delete the `auth.users` row this call just created —
-    `admin.auth.admin.deleteUser(invitedAuthUser.id)` — before rethrowing the original error. This
-    compensation only ever runs when this call is certain it created the identity in step 4b; the
-    existing-identity branch (4a) never deletes anything, under any circumstance. This is the
-    closest thing to a two-phase operation available without a dedicated `member_invitations`
-    table (a real, more robust future design — explicitly out of scope for this MVP, see below).
+    `admin.auth.admin.deleteUser(invitedAuthUser.id)` — before rethrowing the *original* insert
+    error. The cleanup call is itself wrapped in its own try/catch: if `deleteUser` also fails,
+    that failure is logged (never printed with the original error's stack, just noted as its own
+    line) and the **original insert error is what gets thrown either way** — a cleanup failure must
+    never replace or mask the real failure that triggered it. This compensation only ever runs when
+    this call is certain it created the identity in step 4b; the existing-identity branch (4a)
+    never deletes anything, under any circumstance. This is the closest thing to a two-phase
+    operation available without a dedicated `member_invitations` table (a real, more robust future
+    design — explicitly out of scope for this MVP, see below).
+
+    One accepted limitation of this approach, worth stating rather than discovering later:
+    Supabase's invite email may already have been sent (step 4b's `inviteUserByEmail` call) before
+    the membership insert fails and the compensating delete runs. If the invited person clicks that
+    email after the identity has been deleted, they land on an "invalid link" state — a real but
+    narrow race window, and an accepted MVP tradeoff given the alternative is the
+    `member_invitations` table already deferred above.
 
 5. **Log the event** (both branches). `logDomainEvent(client, { organizationId, action:
    'member.added', targetType: 'member', targetId: <the new members row's id>, actor: { kind:
@@ -184,12 +199,18 @@ export async function sendTransactionalEmail(input: {
   to: string;
   subject: string;
   html: string;
+  idempotencyKey?: string;
 }): Promise<void> {
   const response = await fetch('https://api.resend.com/emails', {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${RESEND_API_KEY}`,
       'Content-Type': 'application/json',
+      // Resend's HTTP API rejects requests with no User-Agent (403, error 1010) — its own SDK
+      // sets this automatically, a manual fetch has to do it explicitly. Rename to avanza/1.0
+      // whenever the product rebrand lands; this string is never user-visible.
+      'User-Agent': 'docuflow/1.0',
+      ...(input.idempotencyKey ? { 'Idempotency-Key': input.idempotencyKey } : {}),
     },
     body: JSON.stringify({
       from: 'DocuFlow <noreply@avanza.work>',
@@ -199,7 +220,10 @@ export async function sendTransactionalEmail(input: {
     }),
   });
   if (!response.ok) {
-    throw new Error(`Resend API error: ${response.status} ${await response.text()}`);
+    // Parsed only for Resend's own error `name`/`message` fields — never the raw response body,
+    // which could otherwise carry recipient/content details into logs.
+    const body = await response.json().catch(() => null);
+    throw new Error(`Resend API error: ${response.status} ${body?.name ?? body?.message ?? 'unknown_error'}`);
   }
 }
 ```
@@ -209,10 +233,13 @@ API keys work both ways). `inviteMember`'s step 4a calls this with:
 Subject: Te agregaron al equipo de {organizationName} en DocuFlow
 Body: Ya tienes acceso. Entra en {APP_ORIGIN}/login con tu correo.
       Si todavía no tienes contraseña, usa "¿Olvidaste tu contraseña?" para crear una.
+idempotencyKey: `member-added/${organizationId}/${insertedMember.id}`
 ```
-Wrapped in try/catch inside the use case per step 4a above — a failure here is logged
-server-side and never surfaces to the owner as a failed invite (the membership already exists and
-is real; only the notice about it may be missing).
+Wrapped in try/catch inside the use case per step 4a above — a failure here is logged server-side
+via a structured, minimal line (`{ organizationId, memberId: insertedMember.id, status:
+'email_delivery_failed' }` — never the API key, the HTML body, or the full recipient/provider
+response) and never surfaces to the owner as a failed invite (the membership already exists and is
+real; only the notice about it may be missing).
 
 ## Establecer / recuperar contraseña
 
@@ -226,14 +253,30 @@ Enlace vencido o inválido — no session ever resolved; form is not rendered
 Contraseña guardada — success, briefly shown before redirect
 ```
 
-On mount, the component listens for `supabase.auth.onAuthStateChange` (the documented pattern for
-both the invite and recovery links — Supabase fires a `PASSWORD_RECOVERY` event, or in the invite
-case a normal `SIGNED_IN`, once it has processed the URL) *and* calls `supabase.auth.getUser()` as
-an immediate check in case a session already resolved before the listener attached. If neither
-path produces an authenticated user within a short bounded wait (a few seconds is enough — this is
-local processing of a URL fragment, not a network round trip), the component moves to "Enlace
-vencido o inválido" and never renders the password form. Only once a real session is confirmed
-does the form appear.
+On mount, the component listens for `supabase.auth.onAuthStateChange`, watching for
+`INITIAL_SESSION`, `SIGNED_IN`, and `PASSWORD_RECOVERY` (the invite link resolves as a normal
+`SIGNED_IN`; the recovery link fires Supabase's dedicated `PASSWORD_RECOVERY` event — both are
+documented outcomes of Supabase processing the URL, not something this page infers itself) *and*
+calls `supabase.auth.getUser()` once immediately, in case a session already resolved before the
+listener attached. The component stays in "Validando enlace" until **one of two conclusive
+signals** arrives — a real authenticated user (→ "Enlace válido"), or an explicit
+auth/session error surfaced by either the listener or `getUser()` (→ "Enlace vencido o
+inválido") — and only falls back to a conservative timeout (a few seconds) as a **last-resort
+safety net**, not the primary way this decision gets made; a slow hydration or slow connection
+should never be misread as an invalid link just because a fixed clock ran out first. The effect
+cleans up on unmount (`clearTimeout` + `subscription.unsubscribe()`) and guards against setting
+state after unmount. The password form renders only once "Enlace válido" is reached.
+
+**Any authenticated session may use this page, not only one that arrived via an invite/recovery
+link.** `supabase.auth.updateUser({ password })` only requires *some* valid session — this route
+does not (and, per the review that shaped this spec, deliberately does not try to) distinguish "I
+have a session because I clicked a recovery link" from "I have a session because I'm already
+logged in and navigated here directly." Both end up doing the same authenticated action
+(`updateUser`) either way. Restricting the page to only `PASSWORD_RECOVERY`-originated sessions
+would require a signal the invite flow doesn't reliably provide (it resolves as an ordinary
+`SIGNED_IN`, indistinguishable from a normal login), so this spec accepts the wider behavior rather
+than adding scope to narrow it. Recorded here as an explicit, accepted product decision, not an
+overlooked edge case.
 
 The form itself: "Nueva contraseña" (`type="password"`), "Confirmar contraseña", one submit
 ("Guardar contraseña"). Client-side, before calling Supabase at all: both fields must match, and
