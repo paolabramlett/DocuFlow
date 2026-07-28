@@ -146,10 +146,16 @@ export async function inviteMember(
 
     if (weCreatedThisIdentity) {
       try {
-        await admin.auth.admin.deleteUser(invitedAuthUserId);
+        const { error: cleanupError } = await admin.auth.admin.deleteUser(invitedAuthUserId);
+        if (cleanupError) {
+          // A cleanup failure must never replace or mask the real failure that triggered it — the
+          // original insert error is always what gets thrown, below, regardless of this outcome.
+          console.error('Failed to clean up auth user after failed membership insert', {
+            invitedAuthUserId,
+            cleanupError,
+          });
+        }
       } catch (cleanupError) {
-        // A cleanup failure must never replace or mask the real failure that triggered it — the
-        // original insert error is always what gets thrown, below, regardless of this outcome.
         console.error('Failed to clean up auth user after failed membership insert', {
           invitedAuthUserId,
           cleanupError,

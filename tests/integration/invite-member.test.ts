@@ -181,17 +181,37 @@ describe('inviteMember', () => {
     });
     const brandNewEmail = `compensate-${randomUUID()}@example.test`;
 
-    // A foreign organizationId makes the membership insert fail at the RLS floor (the owner's
-    // client is not a member of this made-up org), simulating "insert fails for some reason"
-    // without needing to fabricate a lower-level DB error.
-    const foreignOrganizationId = randomUUID();
+    // The owner's client passes authorization and organization resolution normally — a brand-new
+    // auth identity really does get created for brandNewEmail. Only the final `members` insert is
+    // made to fail, via a thin wrapper that delegates every other call (including both `select`
+    // checks the use case runs) to the real client. This is the only way to reach the insert
+    // failure while `weCreatedThisIdentity` is genuinely true, since RLS and validation both fail
+    // *before* identity creation for any input the use case would otherwise reject.
+    const realMembersTable = world.owner.client.from('members');
+    const failingInsertClient = {
+      ...world.owner.client,
+      from(table: string) {
+        if (table !== 'members') return world.owner.client.from(table as 'organizations');
+        return {
+          select: realMembersTable.select.bind(realMembersTable),
+          insert: () => ({
+            select: () => ({
+              single: async () => ({
+                data: null,
+                error: { message: 'simulated insert failure', code: 'TEST01' },
+              }),
+            }),
+          }),
+        };
+      },
+    } as typeof world.owner.client;
 
     await expect(
-      inviteMember(world.owner.client, adminClient(), {
-        organizationId: foreignOrganizationId,
+      inviteMember(failingInsertClient, adminClient(), {
+        organizationId: world.organizationId,
         email: brandNewEmail,
       }),
-    ).rejects.toThrow();
+    ).rejects.toThrow(/Could not create membership/);
 
     const { data: usersAfter } = await adminClient().auth.admin.listUsers({ page: 1, perPage: 200 });
     expect(usersAfter.users.some((u) => u.email === brandNewEmail)).toBe(false);
