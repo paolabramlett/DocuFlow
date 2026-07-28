@@ -2,8 +2,8 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { z } from 'zod';
 import type { Database } from '@/types/database';
-import { parseInput } from '@/lib/validation/parse';
-import { UseCaseError, type ActorContext } from './errors';
+import { ValidationError, parseInput } from '@/lib/validation/parse';
+import { UseCaseError } from './errors';
 import { logDomainEvent } from './events';
 
 type DbClient = SupabaseClient<Database>;
@@ -19,14 +19,14 @@ export type UpdateOrganizationInput = z.infer<typeof updateOrganizationSchema>;
 /**
  * Updates an Organization's name and industry.
  *
- * Authorization is explicit and self-contained: this re-derives the actor's role from `members`
- * through the caller's own RLS-scoped `client` — it does not trust anything the caller already
- * believes about `actor`. The re-derivation is anchored to `client.auth.getUser()`, the
- * cryptographically verified identity of the actual calling session (validated from the JWT,
- * not spoofable by a caller-supplied string) — never to the `actor` argument, which is trusted
- * only for audit-event attribution (who to log as the actor), not for the authorization decision
- * itself. This is one of three independent layers (the Server Action checks too, and
- * `organizations_update_by_owner` RLS is the floor); none of the three is decorative.
+ * Authorization and audit attribution are both anchored to the same single source of truth:
+ * `client.auth.getUser()`, the cryptographically verified identity of the actual calling session
+ * (validated from the JWT, not spoofable by a caller-supplied string). This use case takes no
+ * separate caller-supplied actor argument to trust or distrust — there is nothing to reconcile,
+ * because the verified `user.id` is used both to re-derive the actor's role from `members` and to
+ * attribute the resulting `organization.updated` audit event. This is one of three independent
+ * layers (the Server Action checks too, and `organizations_update_by_owner` RLS is the floor);
+ * none of the three is decorative.
  *
  * Changing `industry` never touches any existing Case, Blueprint, or Requirement — it is read
  * only when *creating* new things (default terminology, starter Blueprints), never retroactively
@@ -35,9 +35,17 @@ export type UpdateOrganizationInput = z.infer<typeof updateOrganizationSchema>;
 export async function updateOrganization(
   client: DbClient,
   input: UpdateOrganizationInput,
-  actor: ActorContext,
 ): Promise<void> {
-  const { organizationId, name, industry } = parseInput(updateOrganizationSchema, input);
+  let parsed;
+  try {
+    parsed = parseInput(updateOrganizationSchema, input);
+  } catch (error) {
+    if (error instanceof ValidationError) {
+      throw new UseCaseError('validation', 'Revisa la información.', error.issues);
+    }
+    throw error;
+  }
+  const { organizationId, name, industry } = parsed;
 
   const {
     data: { user },
@@ -74,7 +82,7 @@ export async function updateOrganization(
     action: 'organization.updated',
     targetType: 'organization',
     targetId: organizationId,
-    actor: { kind: 'member', authUserId: actor.authUserId },
+    actor: { kind: 'member', authUserId: user.id },
     metadata: { name, industry },
   });
 }

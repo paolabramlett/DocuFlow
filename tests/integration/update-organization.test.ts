@@ -14,11 +14,11 @@ describe('updateOrganization', () => {
       clientEmail: `owner-update-${randomUUID()}@example.test`,
     });
 
-    await updateOrganization(
-      world.owner.client,
-      { organizationId: world.organizationId, name: 'Notaría Renombrada', industry: 'legal' },
-      { authUserId: world.owner.userId },
-    );
+    await updateOrganization(world.owner.client, {
+      organizationId: world.organizationId,
+      name: 'Notaría Renombrada',
+      industry: 'legal',
+    });
 
     const { data: org } = await adminClient()
       .from('organizations')
@@ -44,19 +44,19 @@ describe('updateOrganization', () => {
     });
 
     await expect(
-      updateOrganization(
-        world.staff.client,
-        { organizationId: world.organizationId, name: 'Intento no autorizado', industry: 'legal' },
-        { authUserId: world.staff.userId },
-      ),
+      updateOrganization(world.staff.client, {
+        organizationId: world.organizationId,
+        name: 'Intento no autorizado',
+        industry: 'legal',
+      }),
     ).rejects.toMatchObject({ reason: 'forbidden' });
 
     await expect(
-      updateOrganization(
-        world.staff.client,
-        { organizationId: world.organizationId, name: 'Intento no autorizado', industry: 'legal' },
-        { authUserId: world.staff.userId },
-      ),
+      updateOrganization(world.staff.client, {
+        organizationId: world.organizationId,
+        name: 'Intento no autorizado',
+        industry: 'legal',
+      }),
     ).rejects.toBeInstanceOf(UseCaseError);
   });
 
@@ -92,11 +92,11 @@ describe('updateOrganization', () => {
       .eq('id', world.caseId)
       .single();
 
-    await updateOrganization(
-      world.owner.client,
-      { organizationId: world.organizationId, name: 'Notaría Industria', industry: 'accounting' },
-      { authUserId: world.owner.userId },
-    );
+    await updateOrganization(world.owner.client, {
+      organizationId: world.organizationId,
+      name: 'Notaría Industria',
+      industry: 'accounting',
+    });
 
     const { data: after } = await adminClient()
       .from('cases')
@@ -105,23 +105,5 @@ describe('updateOrganization', () => {
       .single();
 
     expect(after).toEqual(before);
-  });
-
-  it('refuses a non-owner even if they pass a fabricated actor.authUserId claiming to be the owner', async () => {
-    const world = await buildOrganizationWorld({
-      name: 'Notaría Actor Spoofing',
-      industry: 'notary',
-      clientEmail: `actor-spoof-${randomUUID()}@example.test`,
-    });
-
-    // world.staff is a real, non-owner session — but the `actor` argument claims to be the owner.
-    // The fix must anchor authorization to the real session (world.staff.client), not this claim.
-    await expect(
-      updateOrganization(
-        world.staff.client,
-        { organizationId: world.organizationId, name: 'Intento con actor falso', industry: 'legal' },
-        { authUserId: world.owner.userId },
-      ),
-    ).rejects.toMatchObject({ reason: 'forbidden' });
   });
 });
