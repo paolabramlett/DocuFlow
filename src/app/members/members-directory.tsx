@@ -9,10 +9,6 @@ const ROLE_LABEL: Record<MemberDirectoryRow["role"], string> = {
   staff: "Staff",
 };
 
-function formatMemberSince(iso: string): string {
-  return new Date(iso).toLocaleDateString("es-MX", { year: "numeric", month: "long", day: "numeric" });
-}
-
 export function MembersDirectory({
   members,
   isOwner,
@@ -64,7 +60,7 @@ export function MembersDirectory({
                 <tr key={m.id}>
                   <td className="px-5 py-3 font-medium text-text-primary">{m.email}</td>
                   <td className="px-5 py-3 text-text-secondary">{ROLE_LABEL[m.role]}</td>
-                  <td className="px-5 py-3 text-text-secondary">{formatMemberSince(m.memberSince)}</td>
+                  <td className="px-5 py-3 text-text-secondary">{m.memberSince}</td>
                 </tr>
               ))}
             </tbody>

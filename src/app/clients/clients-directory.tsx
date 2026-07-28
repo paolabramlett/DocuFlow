@@ -47,6 +47,10 @@ export function ClientsDirectory({
           <p className="text-sm text-text-secondary">
             Aún no tienes clientes. Aparecerán aquí cuando crees tu primer expediente.
           </p>
+        ) : filtered.length === 0 ? (
+          <p className="text-sm text-text-secondary">
+            No se encontraron clientes para «{query}».
+          </p>
         ) : (
           <div className="overflow-hidden rounded-card border border-border bg-surface">
             <table className="w-full text-left text-sm">

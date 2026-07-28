@@ -33,6 +33,11 @@ export async function getOrganizationMembers(
     id: row.id,
     email: row.email ?? '',
     role: row.role === 'owner' ? 'owner' : 'staff',
-    memberSince: row.created_at,
+    memberSince: new Date(row.created_at).toLocaleDateString('es-MX', {
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric',
+      timeZone: 'America/Mexico_City',
+    }),
   }));
 }

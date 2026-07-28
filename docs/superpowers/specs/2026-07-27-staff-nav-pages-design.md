@@ -133,6 +133,17 @@ the existing `organizations_update_by_owner` RLS policy (`20260722193136_organiz
 `access_retention_days` stay out of the UI — their migrations explicitly say "not surfaced in the
 MVP UI," and nothing about this round changes that.
 
+> **Correction (post-implementation):** the `actor: ActorContext` design described in this section
+> and below was found during implementation to be bypassable: the `members` RLS policy is
+> org-scoped (any member can read any other member's row within the organization), not row-scoped
+> to the caller, so a non-owner could invoke `updateOrganization` with a fabricated
+> `actor.authUserId` claiming to be the owner and the check would incorrectly trust it. The shipped
+> code instead has `updateOrganization(client, input)` take **no** `actor` parameter at all —
+> identity is derived via `client.auth.getUser()` (the cryptographically verified session), used
+> for both the authorization check and audit attribution, so there is no caller-suppliable identity
+> to spoof. `ActorContext` was removed from `src/application/errors.ts` entirely since nothing uses
+> it. See `src/application/update-organization.ts` for the actual implementation.
+
 **Authorization — explicit, three layers, none of them decorative:**
 1. The use case itself re-derives the actor's role and refuses the write if it isn't `owner`
    — it does not trust a boolean the caller hands it. Concretely: `updateOrganization` takes an
@@ -143,6 +154,7 @@ MVP UI," and nothing about this round changes that.
    same RLS-scoped `client` the caller passed in** (not the admin client) and checks
    `role === 'owner'`. If not, throws `UseCaseError('forbidden', 'Solo el propietario puede editar esta información.')`
    before touching `organizations` at all.
+   ⚠️ *(This exact design was found bypassable — see correction note above.)*
 2. The Server Action (`src/app/settings/actions.ts`, `updateOrganizationAction(input)`)
    independently resolves `requireStaff()`-equivalent context and checks `role === 'owner'` too,
    returning a dedicated `forbidden` `ActionResult` if not — this is reachable by direct POST, so
@@ -160,6 +172,8 @@ resolved staff context on the server, same as Members.
   industry one of the existing CHECK-constrained values), then a plain `update` on `organizations`,
   then exactly one `logDomainEvent` call for `organization.updated` — one call total per save, even
   when both `name` and `industry` changed in the same submission, not one event per changed field.
+  ⚠️ *(Correction: the shipped signature is `updateOrganization(client, input)` — no `actor`
+  parameter. See the correction note under "Authorization" above.)*
 
 **Changing industry never touches existing data.** `organizations.industry` is read by other parts
 of the system only when *creating new* things (default terminology, starter Blueprints suggested
@@ -227,7 +241,9 @@ fires.
   - An owner can update name and industry in one call; `audit_events` gets exactly one
     `organization.updated` row for that call, not two.
   - A non-owner staff member's attempt is refused **twice over**: once by the use case's own
-    `ActorContext` check (assert the specific `UseCaseError('forbidden', ...)`), and once more by
+    membership-role check (derived from `client.auth.getUser()`, not a caller-suppliable
+    `ActorContext` — see correction note under "Authorization" above; assert the specific
+    `UseCaseError('forbidden', ...)`), and once more by
     calling the raw RLS-scoped update directly with a staff member's client, bypassing the use
     case entirely, to prove the RLS floor (`organizations_update_by_owner`) holds independently of
     any application-layer bug.
