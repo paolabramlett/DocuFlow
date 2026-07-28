@@ -958,6 +958,16 @@ export type Database = {
         Args: { organization_industry: string; organization_name: string }
         Returns: string
       }
+      org_members_with_email: {
+        Args: { target_organization_id: string }
+        Returns: {
+          created_at: string
+          email: string
+          id: string
+          role: string
+          user_id: string
+        }[]
+      }
     }
     Enums: {
       [_ in never]: never
