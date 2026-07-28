@@ -16,16 +16,6 @@ export type FailureReason =
   | "delivery_failed"
   | "unexpected";
 
-/**
- * The minimal identity a use case needs to authorize itself, independent of whatever the caller
- * (a Server Action, a script, a test) already believes about that identity's role. A use case
- * that receives only this and re-derives authorization from the database — rather than trusting
- * a boolean the caller hands it — cannot be bypassed by a caller-side bug.
- */
-export interface ActorContext {
-  readonly authUserId: string;
-}
-
 export class UseCaseError extends Error {
   readonly reason: FailureReason;
   /** Field-level issues, when the failure came from input validation. */
