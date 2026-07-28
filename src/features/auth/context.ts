@@ -6,6 +6,7 @@ export interface StaffContext {
   readonly email: string;
   readonly organizationId: string;
   readonly organizationName: string;
+  readonly organizationIndustry: string;
   readonly role: "owner" | "staff";
 }
 
@@ -26,7 +27,7 @@ export async function getStaffContext(): Promise<StaffContext | null> {
 
   const { data: membership } = await supabase
     .from("members")
-    .select("role, organization:organizations(id, name)")
+    .select("role, organization:organizations(id, name, industry)")
     .limit(1)
     .maybeSingle();
 
@@ -37,6 +38,7 @@ export async function getStaffContext(): Promise<StaffContext | null> {
     email: user.email ?? "",
     organizationId: membership.organization.id,
     organizationName: membership.organization.name,
+    organizationIndustry: membership.organization.industry,
     role: membership.role === "owner" ? "owner" : "staff",
   };
 }

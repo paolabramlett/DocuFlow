@@ -14,7 +14,9 @@ export interface ShellAccount {
   readonly sub: string;
 }
 
-type NavKey = "cases" | "blueprints" | "clients" | "members";
+// "settings" is included so /settings can pass it as `active` today; Task 9 of the staff-nav-pages
+// plan adds the corresponding NAV entry and active-state highlighting for the sidebar link itself.
+type NavKey = "cases" | "blueprints" | "clients" | "members" | "settings";
 
 const NAV: { key: NavKey; label: string; href: string; Icon: (p: IconProps) => React.ReactElement }[] = [
   { key: "cases", label: "Expedientes", href: "/cases", Icon: IconCases },
