@@ -31,9 +31,10 @@ export default function SetPasswordPage() {
   useEffect(() => {
     const supabase = createClient();
     const timeoutRef: { current: ReturnType<typeof setTimeout> | undefined } = { current: undefined };
+    let cancelled = false;
 
     function resolve(next: LinkState) {
-      if (resolvedRef.current) return;
+      if (resolvedRef.current || cancelled) return;
       resolvedRef.current = true;
       clearTimeout(timeoutRef.current);
       setLinkState(next);
@@ -61,6 +62,7 @@ export default function SetPasswordPage() {
     timeoutRef.current = setTimeout(() => resolve("invalid"), RESOLUTION_TIMEOUT_MS);
 
     return () => {
+      cancelled = true;
       clearTimeout(timeoutRef.current);
       subscription.unsubscribe();
     };
