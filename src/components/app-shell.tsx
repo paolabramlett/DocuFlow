@@ -23,6 +23,7 @@ const NAV: { key: NavKey; label: string; href: string; Icon: (p: IconProps) => R
   { key: "blueprints", label: "Plantillas", href: "/blueprints", Icon: IconBlueprints },
   { key: "clients", label: "Clientes", href: "/clients", Icon: IconClients },
   { key: "members", label: "Miembros", href: "/members", Icon: IconMembers },
+  { key: "settings", label: "Configuración", href: "/settings", Icon: IconSettings },
 ];
 
 const DEFAULT_ACCOUNT: ShellAccount = { name: "Notaría Central", sub: "Personal" };
@@ -53,11 +54,7 @@ export function Sidebar({ active, account = DEFAULT_ACCOUNT }: { active: NavKey;
         })}
       </nav>
       <div className="mt-auto flex flex-col gap-1 border-t border-white/10 pt-3">
-        <button className="flex items-center gap-3 rounded-input px-3 py-2.5 text-sm font-medium text-white/70 transition-colors hover:bg-white/10 hover:text-white">
-          <IconSettings className="size-[18px]" />
-          Configuración
-        </button>
-        <div className="mt-1 flex items-center gap-2.5 px-3 py-2">
+        <div className="flex items-center gap-2.5 px-3 py-2">
           <div className="flex size-8 items-center justify-center rounded-full bg-white/15 text-xs font-semibold">
             {initials(account.name)}
           </div>
