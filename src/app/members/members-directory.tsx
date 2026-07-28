@@ -1,8 +1,11 @@
 "use client";
 
+import { useState } from "react";
+import { useRouter } from "next/navigation";
 import { AppShell, type ShellAccount } from "@/components/app-shell";
 import { IconMail } from "@/components/icons";
 import type { MemberDirectoryRow } from "@/features/members/queries";
+import { inviteMemberAction } from "./actions";
 
 const ROLE_LABEL: Record<MemberDirectoryRow["role"], string> = {
   owner: "Propietario",
@@ -18,23 +21,45 @@ export function MembersDirectory({
   isOwner: boolean;
   account: ShellAccount;
 }) {
+  const router = useRouter();
+  const [modalOpen, setModalOpen] = useState(false);
+  const [email, setEmail] = useState("");
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    setPending(true);
+    setError(null);
+    const result = await inviteMemberAction(email);
+    setPending(false);
+    if (result.ok) {
+      setModalOpen(false);
+      setEmail("");
+      router.refresh();
+    } else {
+      setError(result.message);
+    }
+  }
+
+  function closeModal() {
+    setModalOpen(false);
+    setEmail("");
+    setError(null);
+  }
+
   return (
     <AppShell active="members" account={account}>
       <div className="flex h-16 shrink-0 items-center gap-4 border-b border-border bg-surface px-7">
         <h1 className="text-base font-semibold text-text-primary">Miembros</h1>
         {isOwner && (
-          <div className="group relative ml-auto">
-            <button
-              type="button"
-              disabled
-              className="flex cursor-not-allowed items-center gap-2 rounded-input bg-royal-600/40 px-4 py-2 text-sm font-semibold text-white/70"
-            >
-              <IconMail className="size-4" /> Invitar miembro
-            </button>
-            <div className="pointer-events-none absolute right-0 top-full z-10 mt-2 w-56 rounded-input border border-border bg-surface px-3 py-2 text-xs text-text-secondary opacity-0 shadow-md transition-opacity group-hover:opacity-100">
-              Próximamente: la invitación por correo estará disponible pronto.
-            </div>
-          </div>
+          <button
+            type="button"
+            onClick={() => setModalOpen(true)}
+            className="ml-auto flex items-center gap-2 rounded-input bg-royal-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-royal-700"
+          >
+            <IconMail className="size-4" /> Invitar miembro
+          </button>
         )}
       </div>
 
@@ -67,6 +92,46 @@ export function MembersDirectory({
           </table>
         </div>
       </div>
+
+      {modalOpen && (
+        <div className="fixed inset-0 z-20 flex items-center justify-center bg-black/40 px-4">
+          <div className="w-full max-w-sm rounded-panel border border-border bg-surface p-6 shadow-md">
+            <h2 className="text-base font-semibold text-text-primary">Invitar miembro</h2>
+            <form onSubmit={submit} className="mt-4 flex flex-col gap-4">
+              <label className="block">
+                <span className="mb-1.5 block text-sm font-medium text-text-primary">Correo electrónico</span>
+                <input
+                  type="email"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  required
+                  autoFocus
+                  className="w-full rounded-input border border-border bg-app-bg px-3 py-2 text-sm text-text-primary outline-none transition-colors focus:border-royal-500 focus:bg-surface focus:ring-2 focus:ring-royal-100"
+                />
+              </label>
+
+              {error && <p className="text-sm text-error">{error}</p>}
+
+              <div className="mt-1 flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={closeModal}
+                  className="rounded-input border border-border bg-surface px-3.5 py-2 text-sm font-medium text-text-primary transition-colors hover:bg-app-bg"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  disabled={pending}
+                  className="rounded-input bg-royal-600 px-3.5 py-2 text-sm font-semibold text-white transition-colors hover:bg-royal-700 disabled:opacity-60"
+                >
+                  {pending ? "Enviando…" : "Enviar invitación"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </AppShell>
   );
 }
