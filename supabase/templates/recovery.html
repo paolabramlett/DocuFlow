@@ -2,6 +2,6 @@
 
 <p>Usa el siguiente enlace para elegir una nueva contraseña:</p>
 
-<p><a href="{{ .ConfirmationURL }}">Elegir nueva contraseña</a></p>
+<p><a href="{{ .SiteURL }}/auth/confirm?token_hash={{ .TokenHash }}&type=recovery&next=/set-password">Elegir nueva contraseña</a></p>
 
 <p>Si no solicitaste esto, puedes ignorar este mensaje — tu contraseña actual sigue funcionando.</p>

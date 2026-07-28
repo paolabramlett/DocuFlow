@@ -3,6 +3,6 @@
 <p>Alguien de tu organización te agregó como miembro. Usa el siguiente enlace para crear tu
 contraseña y entrar:</p>
 
-<p><a href="{{ .ConfirmationURL }}">Crear mi contraseña</a></p>
+<p><a href="{{ .SiteURL }}/auth/confirm?token_hash={{ .TokenHash }}&type=invite&next=/set-password">Crear mi contraseña</a></p>
 
 <p>Si no esperabas esta invitación, puedes ignorar este mensaje.</p>
