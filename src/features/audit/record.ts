@@ -4,6 +4,7 @@ import type { Database } from '@/types/database';
 type AuditInsert = Database['public']['Tables']['audit_events']['Insert'];
 
 export type AuditAction =
+  | 'organization.updated'
   | 'case.created'
   | 'case.state_changed'
   | 'requirement.added'
