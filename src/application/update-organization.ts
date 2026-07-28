@@ -21,8 +21,12 @@ export type UpdateOrganizationInput = z.infer<typeof updateOrganizationSchema>;
  *
  * Authorization is explicit and self-contained: this re-derives the actor's role from `members`
  * through the caller's own RLS-scoped `client` — it does not trust anything the caller already
- * believes about `actor`. This is one of three independent layers (the Server Action checks too,
- * and `organizations_update_by_owner` RLS is the floor); none of the three is decorative.
+ * believes about `actor`. The re-derivation is anchored to `client.auth.getUser()`, the
+ * cryptographically verified identity of the actual calling session (validated from the JWT,
+ * not spoofable by a caller-supplied string) — never to the `actor` argument, which is trusted
+ * only for audit-event attribution (who to log as the actor), not for the authorization decision
+ * itself. This is one of three independent layers (the Server Action checks too, and
+ * `organizations_update_by_owner` RLS is the floor); none of the three is decorative.
  *
  * Changing `industry` never touches any existing Case, Blueprint, or Requirement — it is read
  * only when *creating* new things (default terminology, starter Blueprints), never retroactively
@@ -35,11 +39,18 @@ export async function updateOrganization(
 ): Promise<void> {
   const { organizationId, name, industry } = parseInput(updateOrganizationSchema, input);
 
+  const {
+    data: { user },
+  } = await client.auth.getUser();
+  if (!user) {
+    throw new UseCaseError('unauthenticated', 'Tu sesión expiró. Inicia sesión de nuevo.');
+  }
+
   const { data: membership, error: membershipError } = await client
     .from('members')
     .select('role')
     .eq('organization_id', organizationId)
-    .eq('user_id', actor.authUserId)
+    .eq('user_id', user.id)
     .maybeSingle();
 
   if (membershipError) {
