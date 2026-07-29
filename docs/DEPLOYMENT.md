@@ -51,10 +51,26 @@ The function fails closed until all four are present.
 | Setting | Value | Dashboard location |
 |---|---|---|
 | Magic Link email → send a **code** | contents of `supabase/templates/magic_link.html` (`{{ .Token }}`) | Authentication → Email Templates |
+| Invite email | contents of `supabase/templates/invite.html` | Authentication → Email Templates |
+| Recovery email | contents of `supabase/templates/recovery.html` | Authentication → Email Templates |
 | OTP expiry | 300 s (5 min) | Authentication → Providers → Email |
 | Session | inactivity 1h, timebox 24h | Authentication → Sessions |
+| **Site URL** | `https://<production-domain>` | Authentication → URL Configuration |
 
-The URL settings (`site_url`, redirect URLs) wait until a production domain exists.
+**Site URL is load-bearing for invite/recovery, not just cosmetic.** Both the invite and
+recovery email templates build their link from `{{ .SiteURL }}/auth/confirm?...` directly — there
+is no per-request `redirectTo` override anymore (see `src/app/auth/confirm/route.ts`). If Site URL
+isn't set to the real production domain, every invite and password-reset email silently points at
+the wrong host and the feature is broken end to end with no visible error. The `additional_redirect_urls`
+allowlist setting is NOT used by this flow (that only ever gated the older, now-removed
+`{{ .ConfirmationURL }}`-based links) and does not need to be touched for this feature to work.
+
+The invite-member feature also needs two ordinary app env vars set in Vercel (Project Settings →
+Environment Variables), separate from the Edge Function secrets above: `APP_ORIGIN` (the deployed
+app's real origin) and `RESEND_API_KEY` (the same Resend key used for the reminder Edge Function).
+`src/lib/supabase/env.ts` reads both eagerly at module load, so a missing value fails every server
+request, not just the invite path — set them before the first deploy that includes this feature,
+not after.
 
 ### 3. SMTP (for real email delivery)
 Supabase's built-in email only sends to team addresses and is heavily rate-limited. Configure custom SMTP (via Resend) before any real client OTP or reminder can be delivered.

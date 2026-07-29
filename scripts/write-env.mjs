@@ -40,6 +40,15 @@ const contents = [
   `SUPABASE_SERVICE_ROLE_KEY=${status.get('SERVICE_ROLE_KEY')}`,
   `SUPABASE_DB_URL=${status.get('DB_URL')}`,
   '',
+  '# Existing-member notification emails go out for real in local dev too — Mailpit intercepts',
+  '# anything actually sent, but a placeholder key means the Resend call itself fails (logged,',
+  "# swallowed, never blocks the invite). Replace with a real key to test delivery for real.",
+  'RESEND_API_KEY=re_test_placeholder_key_for_local_dev',
+  '',
+  '# Used server-side to build links in invite/recovery-adjacent copy (never the redirect target',
+  "# itself — both email templates build their own link from Supabase's Site URL setting).",
+  'APP_ORIGIN=http://localhost:3000',
+  '',
 ].join('\n');
 
 writeFileSync(new URL('../.env.local', import.meta.url), contents);

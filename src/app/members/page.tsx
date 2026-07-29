@@ -1,8 +1,8 @@
 /*
  * Miembros — Server Component. A team directory: any active member can view it (product
  * decision, see docs/superpowers/specs/2026-07-27-staff-nav-pages-design.md). Only the "Invitar
- * miembro" control is owner-gated, and even for an owner it renders disabled — inviting isn't
- * real yet (needs SMTP + a real auth-user-creation flow), so nothing here pretends otherwise.
+ * miembro" control is owner-gated (see MembersDirectory in members-directory.tsx for the real
+ * invite flow and src/application/invite-member.ts for its authorization).
  */
 
 import { requireStaff } from "@/features/auth/context";

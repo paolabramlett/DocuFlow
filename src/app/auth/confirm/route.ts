@@ -1,7 +1,17 @@
-import { type EmailOtpType } from "@supabase/supabase-js";
 import { redirect } from "next/navigation";
 import type { NextRequest } from "next/server";
 import { createClient } from "@/lib/supabase/server";
+
+// The two templates (supabase/templates/invite.html, recovery.html) are the only source of links
+// into this route, and each hardcodes its own single type — narrower than the full EmailOtpType
+// union so this can't quietly become a general-purpose confirmation endpoint for a flow (e.g.
+// the Client Portal's OTP code) that was never meant to reach it.
+const SUPPORTED_OTP_TYPES = ["invite", "recovery"] as const;
+type SupportedOtpType = (typeof SUPPORTED_OTP_TYPES)[number];
+
+function isSupportedOtpType(value: string | null): value is SupportedOtpType {
+  return value !== null && (SUPPORTED_OTP_TYPES as readonly string[]).includes(value);
+}
 
 /**
  * Exchanges an invite/recovery email link's token for a real session, server-side, before the
@@ -32,28 +42,32 @@ import { createClient } from "@/lib/supabase/server";
 // tab) as a scheme-relative URL pointing at an external host, not as an internal path. Requiring
 // every character to come from a small, explicit allowlist closes that off entirely, rather than
 // trying to enumerate every bypass of a "starts with /, doesn't start with //" check.
-const SAFE_NEXT_PATH = /^\/[A-Za-z0-9\-._~/]*$/;
+export const SAFE_NEXT_PATH = /^\/[A-Za-z0-9\-._~/]*$/;
 
-function isSafeNextPath(value: string | null): value is `/${string}` {
+export function isSafeNextPath(value: string | null): value is `/${string}` {
   return value !== null && SAFE_NEXT_PATH.test(value) && !value.startsWith("//");
 }
 
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
   const tokenHash = searchParams.get("token_hash");
-  const type = searchParams.get("type") as EmailOtpType | null;
+  const type = searchParams.get("type");
   const nextParam = searchParams.get("next");
   const next = isSafeNextPath(nextParam) ? nextParam : "/set-password";
 
   const supabase = await createClient();
 
-  if (tokenHash && type) {
+  if (tokenHash && isSupportedOtpType(type)) {
     const { error } = await supabase.auth.verifyOtp({ type, token_hash: tokenHash });
     if (!error) {
       redirect(next);
     }
   }
 
-  await supabase.auth.signOut();
+  // scope: "local" clears only this browser's session. This is an unauthenticated public GET —
+  // an attacker embedding it (e.g. <img src="…/auth/confirm">) must not be able to force a
+  // cross-device logout via the default global scope, only clear the cookie a failed exchange
+  // could otherwise leave looking valid.
+  await supabase.auth.signOut({ scope: "local" });
   redirect("/set-password");
 }

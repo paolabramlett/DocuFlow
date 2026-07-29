@@ -9,6 +9,7 @@ import * as supabaseServerModule from '@/lib/supabase/server';
 import * as supabaseAdminModule from '@/lib/supabase/admin';
 import * as nextCacheModule from 'next/cache';
 import { inviteMemberAction } from '@/app/members/actions';
+import { UseCaseError } from '@/application/errors';
 
 vi.mock('@/application/invite-member');
 vi.mock('@/features/auth/context');
@@ -105,13 +106,16 @@ describe('inviteMemberAction', () => {
     vi.spyOn(supabaseServerModule, 'createClient').mockResolvedValue(mockClient);
     vi.spyOn(supabaseAdminModule, 'createAdminClient').mockReturnValue(mockAdminClient);
 
-    const useCaseError = new Error('Conflict');
-    Object.assign(useCaseError, { reason: 'conflict', message: 'Already a member' });
+    const useCaseError = new UseCaseError('conflict', 'Already a member');
 
     vi.spyOn(inviteMemberModule, 'inviteMember').mockRejectedValue(useCaseError);
 
     const result = await inviteMemberAction(email);
 
     expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toBe('conflict');
+      expect(result.message).toBe('Already a member');
+    }
   });
 });

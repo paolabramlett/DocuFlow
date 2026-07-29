@@ -2,11 +2,12 @@
 
 /*
  * Shared landing for two entry points: clicking an invite email's link, or a "forgot password"
- * recovery email's link. Both resolve to an authenticated session once Supabase processes the
- * URL — the invite link as an ordinary SIGNED_IN, the recovery link with a dedicated
- * PASSWORD_RECOVERY event. This page deliberately does not try to tell the two apart: any
- * authenticated session may set a new password here, an accepted, explicit product decision
- * (see docs/superpowers/specs/2026-07-28-invite-member-design.md).
+ * recovery email's link. Both templates route through src/app/auth/confirm/route.ts, which
+ * exchanges the link's token for a session server-side (via verifyOtp) and writes it to cookies
+ * before redirecting here — so by the time this page loads, the session (if any) is already
+ * final. This page deliberately does not try to tell an invite session apart from a recovery
+ * session: any authenticated session may set a new password here, an accepted, explicit product
+ * decision (see docs/superpowers/specs/2026-07-28-invite-member-design.md).
  */
 
 import { useEffect, useRef, useState } from "react";
