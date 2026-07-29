@@ -74,8 +74,15 @@ RLS: `blueprint_participant_templates_select_by_member` (any org member reads) /
 `blueprint_participant_templates_write_by_owner` (owners only, single `for all` policy) — identical
 shape to `blueprint_stages`'.
 
+**`blueprint_stages` gains `unique (blueprint_id, position)`.** A duplicate position makes
+`stage_position`-based requirement mapping ambiguous, and nothing currently prevents it — the
+existing table has no such constraint. Since requirements reference stages by position (not id),
+this deserves the same rigor already applied to participant-template positions, arguably more so:
+stages are the older, already-relied-upon mechanism. Verified safe to add: no existing test inserts
+two stages at the same position for one Blueprint.
+
 `role_key` is a stable, slug-formatted identifier (`buyer`, `seller`, `testator`,
-`founding_partner`) — never the display label, which can change/translate. `unique
+`founding-partner`) — never the display label, which can change/translate. `unique
 (blueprint_id, role_key)` is the DB-level guarantee; the query layer additionally validates format
 and re-checks uniqueness defensively (see section 2).
 
@@ -116,6 +123,14 @@ Existing keys (`type`, `label`, `instructions`, `stage_position`) are unchanged.
   the `participant_role_key` pattern) belongs to a future Blueprint-schema revision — `stage_position`
   already works this way for stages today and this pass doesn't need to repeat that mistake for a
   *new* concept, but doesn't need to fix the existing one either.
+- **`key` has no production backfill to do.** Unlike `scope` (which must default safely because real
+  data predates it), no real Blueprint row exists anywhere yet — no seed data, no CRUD UI has ever
+  created one. The only existing places that construct `requirement_definitions` are two test-only
+  sites: `tests/helpers/fixtures.ts`'s `BLUEPRINT_DEFINITIONS` and the inline definitions in
+  `tests/isolation/case-stages.test.ts`. Both are updated in this same change to include a `key` on
+  every entry (3 + 3 entries) — not backfilled via migration, since there is nothing in any real
+  database to backfill. This keeps both fixtures usable as inputs to `getBlueprintDefinition` for
+  any future test that wants to exercise it against a Blueprint they build.
 
 ### `create_case` RPC
 The requirement-clone `insert` gains one filter: `where ... and coalesce(definition->>'scope',
@@ -158,8 +173,9 @@ page over one bad Blueprint elsewhere:
 - Any other value, non-object element, or unreadable definition → **not counted at all** (never
   thrown, never guessed into a bucket).
 
-Error handling: `42501` (permission denied) → `[]`; every other query error → throw. A `42501` must
-never be indistinguishable from "genuinely no Blueprints."
+Error handling: `42501` (permission denied) → `[]`, intentionally matching the existing directory-
+query convention (`getClientsDirectory`) even though the UI cannot distinguish permission denial
+from a genuinely empty collection; every other query error → throw.
 
 ```ts
 export async function getBlueprintDefinition(
@@ -185,7 +201,8 @@ elsewhere between infrastructure failures and user-input mistakes) on the first 
    `role_key` from this Blueprint's own (already-fetched, already-validated) participant templates.
    `scope: 'case'` ⟺ `participant_role_key` absent. Either direction violated throws.
 6. `stage_position`, if present, must match an actual position in this Blueprint's
-   `blueprint_stages`.
+   `blueprint_stages`. `blueprint_stages` itself has no duplicate `position` within the Blueprint
+   (defensive re-check of the new DB constraint, same reasoning as the `role_key` re-check above).
 7. `key` unique within its bucket (`'case'`, or `participant:<role_key>` per role) — cross-bucket
    reuse (e.g. `buyer/official-id` and `seller/official-id`) is expected and fine.
 8. Deterministic order: stages and participant templates sorted by `position` in JS (never assumed
@@ -227,41 +244,60 @@ export interface BlueprintDefinition {
 `Error` → `unexpected`.
 
 **`createCaseWithParticipantsSchema` gains a discriminated union per participant** (this is the
-security boundary — closes the "omit the role key to fall into the unrestricted manual trust model"
-bypass at the parsing layer itself, since a payload must cleanly match one shape or the other):
+security boundary — `.strict()` on both branches is what actually makes "manual participant cannot
+include blueprint-only fields" true, since `z.object()` silently strips unknown keys by default
+rather than rejecting them):
 ```ts
+const slugKeySchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(200)
+  .regex(/^[a-z0-9]+(-[a-z0-9]+)*$/, 'Debe ser un identificador en formato slug');
+// Structural validation only — the server still checks every key against the Blueprint's real
+// allowlist regardless of whether it's well-formed.
+
 const participantSchema = z.discriminatedUnion('source', [
   z.object({
     source: z.literal('blueprint'),
-    participantTemplateRoleKey: z.string().trim().min(1),
+    participantTemplateRoleKey: slugKeySchema,
     roleLabel: z.string().trim().min(1).max(100),
     fullName: z.string().trim().min(1).max(200),
     email: z.string().trim().toLowerCase().email().max(320),
-    requirementKeys: z.array(z.string().trim().min(1).max(200))
+    requirementKeys: z.array(slugKeySchema)
       .refine((keys) => new Set(keys).size === keys.length, 'Duplicate requirement keys'),
-  }),
+  }).strict(),
   z.object({
     source: z.literal('manual'),
     roleLabel: z.string().trim().min(1).max(100),
     fullName: z.string().trim().min(1).max(200),
     email: z.string().trim().toLowerCase().email().max(320),
     requirements: z.array(z.string().trim().min(1).max(300)), // unchanged freeform trust model
-  }),
+  }).strict(),
 ]);
 ```
 
 **`createCaseWithParticipants` orchestration:**
+- **When `blueprintId` is present, the Blueprint definition is fetched and strictly validated
+  exactly once — regardless of whether any participant is `source: 'blueprint'`.** This closes a
+  real bypass: a crafted or foreign `blueprintId` submitted alongside only `'manual'` participants
+  would otherwise skip the strict query layer entirely while still reaching `create_case`'s RPC
+  clone, contradicting the claim that strict validation is the primary integrity gate. `null` (not
+  found / wrong org) → `UseCaseError('not_found', ...)`; a thrown integrity `Error` propagates as an
+  unexpected failure, exactly like any other internal error in this codebase.
 - Any `source: 'blueprint'` participant with no `blueprintId` on the Case →
-  `UseCaseError('validation', ...)`.
-- The Blueprint definition is fetched **once** per creation call (not once per participant), only
-  if at least one participant needs it.
+  `UseCaseError('validation', ...)` (unchanged).
 - Per `'blueprint'` participant: `participantTemplateRoleKey` must match a real
   `participantTemplates` entry — unknown key → `UseCaseError('validation', ...)`, **never** a
   silently-empty requirement set.
 - `requirementKeys` are treated as an **allowlist intersection, never an expansion**: filtered
-  against that role's allowed keys (a key valid under one role is rejected under another), then
-  mapped to **the Blueprint's own canonical `label`** — client-supplied label text never reaches a
-  blueprint-sourced requirement row.
+  against that role's allowed keys, then mapped to **the Blueprint's own canonical `label`** —
+  client-supplied label text never reaches a blueprint-sourced requirement row. A key that exists
+  only under a *different* role is **filtered out**, not rejected — it simply creates no
+  requirement for this participant; the request as a whole still succeeds. (This is the same
+  narrowing/intersection choice as an unknown key, just phrased for the "valid key, wrong bucket"
+  case specifically — nothing about tampering fails the whole request, only excludes what doesn't
+  belong.)
 - `'manual'` participants: byte-for-byte today's existing, unrestricted behavior — in every
   combination (alone, alongside a Blueprint, mixed with a `'blueprint'` participant in the same
   Case). A manual participant's requirement suggestions are a convenience pool only; it is never
@@ -369,7 +405,7 @@ create/edit UI in this pass.
 |---|---|---|
 | Compraventa | `buyer` (Comprador), `seller` (Vendedor) | Both roles define an `official-id` key (proves bucket-scoped uniqueness in practice — same key, two buckets, no collision), plus a case-scoped `appraisal` |
 | Testamento | `testator` (Testador) | Participant-scoped requirements only |
-| Constitución de sociedad | `founding_partner` (Socio fundador) | Mix of role-specific + case-scoped; one suggested role (repeatable roles explicitly out of scope for MVP) |
+| Constitución de sociedad | `founding-partner` (Socio fundador) | Mix of role-specific + case-scoped; one suggested role (repeatable roles explicitly out of scope for MVP) |
 | Poder notarial | *(none)* | Case-scoped requirements only — the "no participant templates" path |
 
 Covers every shape the model needs to prove itself: multi-role, single-role, and role-less
@@ -395,7 +431,8 @@ empty/whitespace key; invalid slug format; invalid `scope`; `participant` scope 
 `participant_role_key`; `case` scope with `participant_role_key`; empty participant role key;
 orphaned participant role key; duplicate key in the case bucket; duplicate key within the same
 participant-role bucket; duplicate participant-template position; invalid/duplicate participant
-template `role_key`; `stage_position` referencing a nonexistent stage. `listBlueprintSummaries`
+template `role_key`; `stage_position` referencing a nonexistent stage; duplicate `blueprint_stages`
+position. `listBlueprintSummaries`
 separately: counts valid case/participant definitions; treats missing scope as case; ignores
 malformed/unknown definitions for counting; `42501 → []`; other DB errors throw; one malformed
 Blueprint never fails the whole list.
@@ -406,13 +443,19 @@ Blueprint never fails the whole list.
 manual shape; duplicate/empty `requirementKeys` rejected; a payload cannot omit or use an unknown
 `source`.
 
-**D. `createCaseWithParticipants` orchestration tests** — the security-sensitive core. Blueprint
-participants: definition fetched once per creation call regardless of participant count; missing
-`blueprintId` / unknown role key → `UseCaseError('validation')`; selected allowed keys create
-requirements; deselected allowed keys are omitted; injected unknown keys are filtered out;
-persisted labels come from the Blueprint, never client input; the same key under another role is
-rejected for the current role; duplicate keys never reach orchestration (schema rejects them
-first). Manual participants: existing freeform behavior unchanged, with no Blueprint, with an
+**D. `createCaseWithParticipants` orchestration tests** — the security-sensitive core. The Blueprint
+definition is fetched and validated exactly once whenever `blueprintId` is present, **regardless of
+participant sources** — including a case with only `'manual'` participants, a role-less Blueprint, a
+Case with zero participants (rejected earlier for an unrelated reason, but the fetch-once rule still
+applies to whatever participants exist), and a crafted/foreign `blueprintId` bypassing the wizard
+entirely (→ `UseCaseError('not_found')`, never silently ignored). Missing `blueprintId` on a
+`'blueprint'` participant / an unknown role key → `UseCaseError('validation')`. Selected allowed
+keys create requirements; deselected allowed keys are omitted; injected unknown keys are filtered
+out (the request still succeeds); persisted labels come from the Blueprint, never client input; a
+key defined only under a *different* role is **filtered out** for the current participant — it
+creates no requirement, but does not fail the request (never a "rejection" of the whole payload);
+duplicate keys never reach orchestration at all, since the strict, slug-validated schema rejects
+them first. Manual participants: existing freeform behavior unchanged, with no Blueprint, with an
 active Blueprint, never resolved through a role key, never filtered against any allowlist. Mixed:
 one blueprint participant + one manual participant created correctly in the same Case.
 
