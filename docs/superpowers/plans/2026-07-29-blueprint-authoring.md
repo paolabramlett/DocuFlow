@@ -1289,7 +1289,7 @@ No migration needed — `audit_events.action` is `text not null check (length(bt
 
 ```ts
 // tests/integration/save-blueprint.test.ts
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { addStaffMember, createOrganizationWithOwner } from '../helpers/clients';
 import { saveBlueprint } from '@/application/save-blueprint';
 import { deleteBlueprint } from '@/application/delete-blueprint';
@@ -3003,15 +3003,21 @@ Append these `it` blocks inside the existing `describe('saveBlueprint', ...)` bl
 
   it('rethrows an unrecognized RPC error as unexpected rather than downgrading to forbidden', async () => {
     const { organizationId, owner } = await createOrganizationWithOwner('Notaría Save Unexpected', 'notary');
-    // A blueprintId that is a well-formed UUID but does not exist in any organization the caller
-    // can see returns blueprint_not_found (already covered) — to exercise the "anything else
-    // rethrows" branch, this test instead documents the code path exists rather than fabricating
-    // an unreachable server error, since forcing a genuine unexpected Postgres error requires
-    // bypassing the RPC's own preflight checks entirely (outside what a use-case-level test can
-    // safely simulate without a raw SQL connection).
-    expect(saveBlueprint).toBeInstanceOf(Function);
-    void organizationId;
-    void owner;
+
+    // Forcing a genuine unrecognized Postgres error would require bypassing the RPC's own
+    // preflight checks entirely — not reachable through the public save_blueprint contract. This
+    // spies on the one integration point (client.rpc) to simulate that scenario deterministically:
+    // an error whose message is not a key in RPC_VALIDATION_MESSAGES and not 'blueprint_not_found'
+    // or 'not_owner' must propagate as-is, not be silently reclassified as 'forbidden'.
+    const rpcSpy = vi.spyOn(owner.client, 'rpc').mockReturnValueOnce(
+      Promise.resolve({ data: null, error: { message: 'some_never_before_seen_code', code: 'P0001' } }) as never,
+    );
+
+    await expect(
+      saveBlueprint(owner.client, { organizationId, name: 'X', stages: [], participantTemplates: [], requirements: [] }, owner.userId),
+    ).rejects.not.toMatchObject({ reason: 'forbidden' });
+
+    rpcSpy.mockRestore();
   });
 ```
 
