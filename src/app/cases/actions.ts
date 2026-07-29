@@ -21,6 +21,7 @@ import {
   type CreatedCase,
 } from "@/application/create-case-with-participants";
 import { reviewDocument, type ReviewDocumentInput } from "@/application/review-document";
+import { getBlueprintDefinition, type BlueprintDefinition } from "@/features/blueprints/queries";
 
 export async function createCaseAction(
   input: Omit<CreateCaseWithParticipantsInput, "organizationId">,
@@ -57,6 +58,28 @@ export async function reviewDocumentAction(input: ReviewDocumentInput): Promise<
 
     revalidatePath("/cases");
     return ok(null);
+  } catch (error) {
+    return fail(error);
+  }
+}
+
+export async function getBlueprintDefinitionAction(
+  blueprintId: string,
+): Promise<ActionResult<BlueprintDefinition>> {
+  try {
+    const staff = await getStaffContext();
+    if (!staff) {
+      return { ok: false, reason: "unauthenticated", message: "Tu sesión expiró. Inicia sesión de nuevo." };
+    }
+
+    const supabase = await createClient();
+    const definition = await getBlueprintDefinition(supabase, blueprintId, staff.organizationId);
+
+    if (!definition) {
+      return { ok: false, reason: "not_found", message: "La plantilla ya no existe." };
+    }
+
+    return ok(definition);
   } catch (error) {
     return fail(error);
   }
