@@ -1016,6 +1016,18 @@ export type Database = {
           user_id: string
         }[]
       }
+      save_blueprint: {
+        Args: {
+          blueprint_description: string
+          blueprint_name: string
+          participant_templates: Json
+          requirement_definitions: Json
+          stages: Json
+          target_blueprint_id: string
+          target_organization_id: string
+        }
+        Returns: string
+      }
     }
     Enums: {
       [_ in never]: never
