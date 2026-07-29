@@ -69,3 +69,9 @@ export const IconShield = (p: IconProps) => (
 export const IconRefresh = (p: IconProps) => (
   <svg viewBox="0 0 24 24" className={p.className} {...s}><path d="M21 12a9 9 0 1 1-3-6.7L21 8M21 4v4h-4" /></svg>
 );
+export const IconChevronUp = (p: IconProps) => (
+  <svg viewBox="0 0 24 24" className={p.className} {...s}><path d="m6 15 6-6 6 6" /></svg>
+);
+export const IconChevronDown = (p: IconProps) => (
+  <svg viewBox="0 0 24 24" className={p.className} {...s}><path d="m6 9 6 6 6-6" /></svg>
+);
