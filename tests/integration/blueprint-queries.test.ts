@@ -235,6 +235,20 @@ describe('getBlueprintDefinition', () => {
     await expect(getBlueprintDefinition(owner.client, blueprintId, organizationId)).rejects.toThrow();
   });
 
+  it('throws on a missing label', async () => {
+    const { organizationId, owner, blueprintId } = await orgWithBlueprint('Notaría Def Missing Label', [
+      { key: 'no-label', type: 'document', scope: 'case' },
+    ]);
+    await expect(getBlueprintDefinition(owner.client, blueprintId, organizationId)).rejects.toThrow();
+  });
+
+  it('throws on an empty or whitespace-only label', async () => {
+    const { organizationId, owner, blueprintId } = await orgWithBlueprint('Notaría Def Blank Label', [
+      { key: 'blank-label', type: 'document', label: '   ', scope: 'case' },
+    ]);
+    await expect(getBlueprintDefinition(owner.client, blueprintId, organizationId)).rejects.toThrow();
+  });
+
   it('throws on an invalid slug format', async () => {
     const { organizationId, owner, blueprintId } = await orgWithBlueprint('Notaría Def Bad Slug', [
       { key: 'Not_A_Slug', type: 'document', label: 'Bad slug', scope: 'case' },
