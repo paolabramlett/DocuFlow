@@ -23,7 +23,10 @@ export type AuditAction =
   | 'reminder.sent'
   | 'reminder.failed'
   | 'member.added'
-  | 'member.removed';
+  | 'member.removed'
+  | 'blueprint.created'
+  | 'blueprint.updated'
+  | 'blueprint.deleted';
 
 export interface AuditEvent {
   readonly organizationId: string;
