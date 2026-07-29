@@ -85,7 +85,7 @@ begin
        or length(btrim(elem->>'name')) = 0
        or length(btrim(elem->>'name')) > 200
        or elem->>'position' is null
-       or elem->>'position' !~ '^[0-9]+$'
+       or elem->>'position' !~ '^[0-9]{1,9}$'
   ) then
     raise exception using errcode = 'P0001', message = 'invalid_stage_shape';
   end if;
@@ -109,7 +109,7 @@ begin
        or length(btrim(elem->>'display_name')) = 0
        or length(btrim(elem->>'display_name')) > 200
        or elem->>'position' is null
-       or elem->>'position' !~ '^[0-9]+$'
+       or elem->>'position' !~ '^[0-9]{1,9}$'
   ) then
     raise exception using errcode = 'P0001', message = 'invalid_participant_template_shape';
   end if;
@@ -151,7 +151,7 @@ begin
        or (req->>'scope' = 'case' and req->>'participant_role_key' is not null)
        or (
          req->>'stage_position' is not null
-         and req->>'stage_position' !~ '^[0-9]+$'
+         and req->>'stage_position' !~ '^[0-9]{1,9}$'
        )
   ) then
     raise exception using errcode = 'P0001', message = 'invalid_requirement_shape';
