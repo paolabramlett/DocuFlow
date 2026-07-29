@@ -84,6 +84,51 @@ export type Database = {
           },
         ]
       }
+      blueprint_participant_templates: {
+        Row: {
+          blueprint_id: string
+          created_at: string
+          display_name: string
+          id: string
+          organization_id: string
+          position: number
+          role_key: string
+        }
+        Insert: {
+          blueprint_id: string
+          created_at?: string
+          display_name: string
+          id?: string
+          organization_id: string
+          position: number
+          role_key: string
+        }
+        Update: {
+          blueprint_id?: string
+          created_at?: string
+          display_name?: string
+          id?: string
+          organization_id?: string
+          position?: number
+          role_key?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "blueprint_participant_templat_blueprint_id_organization_id_fkey"
+            columns: ["blueprint_id", "organization_id"]
+            isOneToOne: false
+            referencedRelation: "blueprints"
+            referencedColumns: ["id", "organization_id"]
+          },
+          {
+            foreignKeyName: "blueprint_participant_templates_organization_id_fkey"
+            columns: ["organization_id"]
+            isOneToOne: false
+            referencedRelation: "organizations"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       blueprint_stages: {
         Row: {
           blueprint_id: string
@@ -131,6 +176,7 @@ export type Database = {
           created_at: string
           description: string | null
           id: string
+          is_platform_template: boolean
           name: string
           organization_id: string
           requirement_definitions: Json
@@ -140,6 +186,7 @@ export type Database = {
           created_at?: string
           description?: string | null
           id?: string
+          is_platform_template?: boolean
           name: string
           organization_id: string
           requirement_definitions?: Json
@@ -149,6 +196,7 @@ export type Database = {
           created_at?: string
           description?: string | null
           id?: string
+          is_platform_template?: boolean
           name?: string
           organization_id?: string
           requirement_definitions?: Json

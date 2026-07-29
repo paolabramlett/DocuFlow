@@ -151,6 +151,7 @@ describe('schema guards', () => {
 
     expect(rows.map((r) => r.table_name).sort()).toEqual(
       [
+        'blueprint_participant_templates',
         'blueprint_stages',
         'case_access_grants',
         'case_participants',

@@ -32,6 +32,7 @@ type TableName =
   | 'staff_notifications'
   | 'case_participants'
   | 'blueprint_stages'
+  | 'blueprint_participant_templates'
   | 'case_stages';
 
 interface SeededRow {
@@ -118,6 +119,19 @@ async function seedEveryTable(world: OrganizationWorld): Promise<SeededRow[]> {
     .single();
   if (bpStageError || !blueprintStage) throw new Error(`seed blueprint_stage: ${bpStageError?.message}`);
 
+  const { data: participantTemplate, error: ptError } = await admin
+    .from('blueprint_participant_templates')
+    .insert({
+      organization_id: world.organizationId,
+      blueprint_id: world.blueprintId,
+      role_key: 'primary',
+      display_name: 'Primary',
+      position: 0,
+    })
+    .select('id')
+    .single();
+  if (ptError || !participantTemplate) throw new Error(`seed blueprint_participant_template: ${ptError?.message}`);
+
   const { data: caseStage, error: caseStageError } = await admin
     .from('case_stages')
     .insert({
@@ -171,6 +185,7 @@ async function seedEveryTable(world: OrganizationWorld): Promise<SeededRow[]> {
     { table: 'staff_notifications', id: notification.id },
     { table: 'case_participants', id: participant.id },
     { table: 'blueprint_stages', id: blueprintStage.id },
+    { table: 'blueprint_participant_templates', id: participantTemplate.id },
     { table: 'case_stages', id: caseStage.id },
   ];
 }
@@ -186,6 +201,7 @@ const WRITABLE_BY_MEMBER: readonly TableName[] = [
   'documents',
   'case_participants',
   'blueprint_stages',
+  'blueprint_participant_templates',
   'case_stages',
 ];
 
@@ -238,13 +254,14 @@ describe('cross-tenant sweep', () => {
         'staff_notifications',
         'case_participants',
         'blueprint_stages',
+        'blueprint_participant_templates',
         'case_stages',
       ].sort(),
     );
   });
 
   describe('reads', () => {
-    it.each(['organizations', 'members', 'clients', 'blueprints', 'cases', 'case_access_grants', 'requirements', 'documents', 'reviews', 'audit_events', 'reminder_deliveries', 'staff_notifications', 'case_participants', 'blueprint_stages', 'case_stages'] as const)(
+    it.each(['organizations', 'members', 'clients', 'blueprints', 'cases', 'case_access_grants', 'requirements', 'documents', 'reviews', 'audit_events', 'reminder_deliveries', 'staff_notifications', 'case_participants', 'blueprint_stages', 'blueprint_participant_templates', 'case_stages'] as const)(
       'returns zero rows when a member of A selects %s from B',
       async (table) => {
         const target = rowsInB.find((row) => row.table === table);
@@ -257,7 +274,7 @@ describe('cross-tenant sweep', () => {
       },
     );
 
-    it.each(['organizations', 'members', 'clients', 'blueprints', 'cases', 'case_access_grants', 'requirements', 'documents', 'reviews', 'audit_events', 'reminder_deliveries', 'staff_notifications', 'case_participants', 'blueprint_stages', 'case_stages'] as const)(
+    it.each(['organizations', 'members', 'clients', 'blueprints', 'cases', 'case_access_grants', 'requirements', 'documents', 'reviews', 'audit_events', 'reminder_deliveries', 'staff_notifications', 'case_participants', 'blueprint_stages', 'blueprint_participant_templates', 'case_stages'] as const)(
       'makes a real B row in %s indistinguishable from a nonexistent one',
       async (table) => {
         const target = rowsInB.find((row) => row.table === table);

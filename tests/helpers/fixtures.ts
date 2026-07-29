@@ -72,9 +72,9 @@ export async function addParticipant(
 }
 
 const BLUEPRINT_DEFINITIONS = [
-  { type: 'document', label: 'Identity document', instructions: 'Passport or national ID' },
-  { type: 'document', label: 'Proof of address', instructions: 'Utility bill under 3 months' },
-  { type: 'document', label: 'Signed mandate' },
+  { key: 'identity-document', type: 'document', label: 'Identity document', instructions: 'Passport or national ID' },
+  { key: 'proof-of-address', type: 'document', label: 'Proof of address', instructions: 'Utility bill under 3 months' },
+  { key: 'signed-mandate', type: 'document', label: 'Signed mandate' },
 ];
 
 /**

@@ -28,9 +28,9 @@ describe('case stages', () => {
         name: 'Staged intake',
         // Two requirements in stage 0, one in stage 1.
         requirement_definitions: [
-          { type: 'document', label: 'ID', stage_position: 0 },
-          { type: 'document', label: 'Proof of address', stage_position: 0 },
-          { type: 'document', label: 'Signed mandate', stage_position: 1 },
+          { key: 'id', type: 'document', label: 'ID', stage_position: 0 },
+          { key: 'proof-of-address', type: 'document', label: 'Proof of address', stage_position: 0 },
+          { key: 'signed-mandate', type: 'document', label: 'Signed mandate', stage_position: 1 },
         ],
       })
       .select('id')
@@ -126,5 +126,219 @@ describe('case stages', () => {
       .select('id')
       .eq('case_id', caseId as string);
     expect(mine?.length).toBe(2);
+  });
+});
+
+describe('create_case requirement scope filter', () => {
+  it('clones a case-scoped definition onto the case-level checklist', async () => {
+    const { organizationId, owner } = await createOrganizationWithOwner('Notaría Scope Case', 'notary');
+    const staff = await addStaffMember(owner, organizationId);
+    const { data: client } = await owner.client
+      .from('clients')
+      .insert({ organization_id: organizationId, full_name: 'Client', email: `scope-case-${randomUUID()}@example.test` })
+      .select('id')
+      .single();
+    const clientId = client!.id;
+
+    const { data: blueprint } = await owner.client
+      .from('blueprints')
+      .insert({
+        organization_id: organizationId,
+        name: 'Scope test — case',
+        requirement_definitions: [
+          { key: 'appraisal', type: 'document', label: 'Avalúo', scope: 'case' },
+        ],
+      })
+      .select('id')
+      .single();
+
+    const { data: caseId } = await staff.client.rpc('create_case', {
+      target_organization_id: organizationId,
+      target_client_id: clientId,
+      case_title: 'Case-scope test',
+      from_blueprint_id: blueprint!.id,
+    });
+
+    const { data: requirements } = await staff.client
+      .from('requirements')
+      .select('label, participant_id')
+      .eq('case_id', caseId as string);
+
+    expect(requirements?.map((r) => r.label)).toEqual(['Avalúo']);
+    expect(requirements?.[0]?.participant_id).toBeNull();
+  });
+
+  it('does not clone a participant-scoped definition onto the case-level checklist', async () => {
+    const { organizationId, owner } = await createOrganizationWithOwner('Notaría Scope Participant', 'notary');
+    const staff = await addStaffMember(owner, organizationId);
+    const { data: client } = await owner.client
+      .from('clients')
+      .insert({ organization_id: organizationId, full_name: 'Client', email: `scope-p-${randomUUID()}@example.test` })
+      .select('id')
+      .single();
+
+    const { data: blueprint } = await owner.client
+      .from('blueprints')
+      .insert({
+        organization_id: organizationId,
+        name: 'Scope test — participant',
+        requirement_definitions: [
+          { key: 'official-id', type: 'document', label: 'INE', scope: 'participant', participant_role_key: 'buyer' },
+        ],
+      })
+      .select('id')
+      .single();
+    await owner.client.from('blueprint_participant_templates').insert({
+      organization_id: organizationId, blueprint_id: blueprint!.id, role_key: 'buyer', display_name: 'Comprador', position: 0,
+    });
+
+    const { data: caseId } = await staff.client.rpc('create_case', {
+      target_organization_id: organizationId,
+      target_client_id: client!.id,
+      case_title: 'Participant-scope test',
+      from_blueprint_id: blueprint!.id,
+    });
+
+    const { data: requirements } = await staff.client
+      .from('requirements')
+      .select('id')
+      .eq('case_id', caseId as string);
+
+    expect(requirements).toEqual([]);
+  });
+
+  it('treats a missing scope as case (backward compatible with pre-existing data)', async () => {
+    const { organizationId, owner } = await createOrganizationWithOwner('Notaría Scope Legacy', 'notary');
+    const staff = await addStaffMember(owner, organizationId);
+    const { data: client } = await owner.client
+      .from('clients')
+      .insert({ organization_id: organizationId, full_name: 'Client', email: `scope-legacy-${randomUUID()}@example.test` })
+      .select('id')
+      .single();
+
+    const { data: blueprint } = await owner.client
+      .from('blueprints')
+      .insert({
+        organization_id: organizationId,
+        name: 'Scope test — legacy',
+        requirement_definitions: [
+          { key: 'legacy-item', type: 'document', label: 'Legacy item' }, // no scope key at all
+        ],
+      })
+      .select('id')
+      .single();
+
+    const { data: caseId } = await staff.client.rpc('create_case', {
+      target_organization_id: organizationId,
+      target_client_id: client!.id,
+      case_title: 'Legacy-scope test',
+      from_blueprint_id: blueprint!.id,
+    });
+
+    const { data: requirements } = await staff.client
+      .from('requirements')
+      .select('label')
+      .eq('case_id', caseId as string);
+
+    expect(requirements?.map((r) => r.label)).toEqual(['Legacy item']);
+  });
+
+  it('excludes an unknown/malformed scope from the case-level clone', async () => {
+    const { organizationId, owner } = await createOrganizationWithOwner('Notaría Scope Malformed', 'notary');
+    const staff = await addStaffMember(owner, organizationId);
+    const { data: client } = await owner.client
+      .from('clients')
+      .insert({ organization_id: organizationId, full_name: 'Client', email: `scope-bad-${randomUUID()}@example.test` })
+      .select('id')
+      .single();
+
+    const { data: blueprint } = await owner.client
+      .from('blueprints')
+      .insert({
+        organization_id: organizationId,
+        name: 'Scope test — malformed',
+        requirement_definitions: [
+          { key: 'bad-scope-item', type: 'document', label: 'Bad scope item', scope: 'unknown' },
+        ],
+      })
+      .select('id')
+      .single();
+
+    const { data: caseId } = await staff.client.rpc('create_case', {
+      target_organization_id: organizationId,
+      target_client_id: client!.id,
+      case_title: 'Malformed-scope test',
+      from_blueprint_id: blueprint!.id,
+    });
+
+    const { data: requirements } = await staff.client
+      .from('requirements')
+      .select('id')
+      .eq('case_id', caseId as string);
+
+    expect(requirements).toEqual([]);
+  });
+
+  it('clones only the case-scoped subset from a blueprint mixing both scopes', async () => {
+    const { organizationId, owner } = await createOrganizationWithOwner('Notaría Scope Mixed', 'notary');
+    const staff = await addStaffMember(owner, organizationId);
+    const { data: client } = await owner.client
+      .from('clients')
+      .insert({ organization_id: organizationId, full_name: 'Client', email: `scope-mixed-${randomUUID()}@example.test` })
+      .select('id')
+      .single();
+
+    const { data: blueprint } = await owner.client
+      .from('blueprints')
+      .insert({
+        organization_id: organizationId,
+        name: 'Scope test — mixed',
+        requirement_definitions: [
+          { key: 'appraisal', type: 'document', label: 'Avalúo', scope: 'case' },
+          { key: 'official-id', type: 'document', label: 'INE', scope: 'participant', participant_role_key: 'buyer' },
+        ],
+      })
+      .select('id')
+      .single();
+    await owner.client.from('blueprint_participant_templates').insert({
+      organization_id: organizationId, blueprint_id: blueprint!.id, role_key: 'buyer', display_name: 'Comprador', position: 0,
+    });
+
+    const { data: caseId } = await staff.client.rpc('create_case', {
+      target_organization_id: organizationId,
+      target_client_id: client!.id,
+      case_title: 'Mixed-scope test',
+      from_blueprint_id: blueprint!.id,
+    });
+
+    const { data: requirements } = await staff.client
+      .from('requirements')
+      .select('label')
+      .eq('case_id', caseId as string);
+
+    expect(requirements?.map((r) => r.label)).toEqual(['Avalúo']);
+  });
+
+  it('leaves existing non-blueprint case creation unchanged', async () => {
+    const { organizationId, owner } = await createOrganizationWithOwner('Notaría Scope None', 'notary');
+    const staff = await addStaffMember(owner, organizationId);
+    const { data: client } = await owner.client
+      .from('clients')
+      .insert({ organization_id: organizationId, full_name: 'Client', email: `scope-none-${randomUUID()}@example.test` })
+      .select('id')
+      .single();
+
+    const { data: caseId } = await staff.client.rpc('create_case', {
+      target_organization_id: organizationId,
+      target_client_id: client!.id,
+      case_title: 'No-blueprint test',
+    });
+
+    const { data: requirements } = await staff.client
+      .from('requirements')
+      .select('id')
+      .eq('case_id', caseId as string);
+
+    expect(requirements).toEqual([]);
   });
 });
