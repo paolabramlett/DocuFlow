@@ -1531,11 +1531,16 @@ export async function saveBlueprint(
 
   const persistence = toPersistenceJson(validated);
 
+  // target_blueprint_id / blueprint_description are optional (no-null-union) keys in the
+  // generated RPC Args type, per the migration's `default null` on both — the key is omitted
+  // entirely rather than set to an explicit `null`, matching create_case's own from_blueprint_id
+  // convention (discovered as a real typecheck mismatch during Task 3; fixed retroactively in
+  // Task 1's migration rather than left as a plan inconsistency).
   const { data: blueprintId, error } = await client.rpc("save_blueprint", {
     target_organization_id: parsed.organizationId,
-    target_blueprint_id: parsed.blueprintId ?? null,
+    ...(parsed.blueprintId !== undefined ? { target_blueprint_id: parsed.blueprintId } : {}),
     blueprint_name: validated.name,
-    blueprint_description: validated.description,
+    ...(validated.description !== null ? { blueprint_description: validated.description } : {}),
     stages: persistence.stages,
     participant_templates: persistence.participantTemplates,
     requirement_definitions: persistence.requirements,
