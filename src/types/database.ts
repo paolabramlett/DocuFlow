@@ -1018,12 +1018,12 @@ export type Database = {
       }
       save_blueprint: {
         Args: {
-          blueprint_description: string
+          blueprint_description?: string
           blueprint_name: string
           participant_templates: Json
           requirement_definitions: Json
           stages: Json
-          target_blueprint_id: string
+          target_blueprint_id?: string
           target_organization_id: string
         }
         Returns: string

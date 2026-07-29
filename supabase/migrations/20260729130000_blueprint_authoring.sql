@@ -23,14 +23,23 @@ $$;
 alter table public.blueprint_participant_templates
   add constraint blueprint_participant_templates_blueprint_id_position_key unique (blueprint_id, position);
 
+-- Note on parameter order: target_blueprint_id and blueprint_description carry `default null` to
+-- match create_case's optional-arg convention (from_blueprint_id uuid default null, in
+-- 20260729120000_blueprint_participant_templates.sql), so Supabase's type generator emits them as
+-- optional keys in the RPC Args type. Postgres requires every parameter after the first defaulted
+-- one to also have a default, at CREATE FUNCTION time — this applies to the function definition
+-- itself, independent of how callers invoke it later. Since these two are the only optional args,
+-- they're moved to the end of the list. This is safe here because Supabase's client always calls
+-- RPCs with a named-argument object (client.rpc('save_blueprint', { ... })), never positionally, so
+-- reordering has no effect on any call site.
 create or replace function public.save_blueprint(
   target_organization_id uuid,
-  target_blueprint_id uuid,
   blueprint_name text,
-  blueprint_description text,
   stages jsonb,
   participant_templates jsonb,
-  requirement_definitions jsonb
+  requirement_definitions jsonb,
+  target_blueprint_id uuid default null,
+  blueprint_description text default null
 )
 returns uuid
 language plpgsql
@@ -237,5 +246,5 @@ begin
 end;
 $$;
 
-revoke all on function public.save_blueprint(uuid, uuid, text, text, jsonb, jsonb, jsonb) from public;
-grant execute on function public.save_blueprint(uuid, uuid, text, text, jsonb, jsonb, jsonb) to authenticated;
+revoke all on function public.save_blueprint(uuid, text, jsonb, jsonb, jsonb, uuid, text) from public;
+grant execute on function public.save_blueprint(uuid, text, jsonb, jsonb, jsonb, uuid, text) to authenticated;

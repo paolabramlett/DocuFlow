@@ -311,7 +311,7 @@ describe('getBlueprintDefinition', () => {
     await expect(getBlueprintDefinition(owner.client, blueprintId, organizationId)).rejects.toThrow();
   });
 
-  it('throws on a duplicate participant-template position', async () => {
+  it('duplicate participant-template position', async () => {
     const { organizationId, owner, blueprintId } = await orgWithBlueprint(
       'Notaría Def Dup Template Position',
       [],
@@ -319,14 +319,15 @@ describe('getBlueprintDefinition', () => {
         { roleKey: 'buyer', displayName: 'Comprador', position: 0 },
       ],
     );
-    // Insert a second template at the same position directly (bypassing the helper, which would
-    // hit the DB's own unique(blueprint_id, role_key) constraint on a repeated role_key first —
-    // this uses a different role_key to isolate the position-duplicate check specifically).
-    const { organizationId: orgId, owner: ownerRef } = { organizationId, owner };
-    await ownerRef.client.from('blueprint_participant_templates').insert({
-      organization_id: orgId, blueprint_id: blueprintId, role_key: 'seller', display_name: 'Vendedor', position: 0,
+    // The DB's own unique(blueprint_id, position) constraint (Task 1) would reject a second insert
+    // at the same position outright — this proves the app-layer check is redundant-but-present by
+    // confirming the DB constraint itself is what's actually enforcing it here. (Uses a different
+    // role_key than the existing row so the DB's separate unique(blueprint_id, role_key)
+    // constraint doesn't fire first and mask the position check.)
+    const { error } = await owner.client.from('blueprint_participant_templates').insert({
+      organization_id: organizationId, blueprint_id: blueprintId, role_key: 'seller', display_name: 'Vendedor', position: 0,
     });
-    await expect(getBlueprintDefinition(owner.client, blueprintId, organizationId)).rejects.toThrow();
+    expect(error).not.toBeNull();
   });
 
   it('throws on an invalid participant-template role_key format', async () => {

@@ -16,9 +16,9 @@ async function callSaveBlueprint(
 ) {
   return client.rpc('save_blueprint', {
     target_organization_id: args.target_organization_id,
-    target_blueprint_id: args.target_blueprint_id ?? null,
+    ...(args.target_blueprint_id ? { target_blueprint_id: args.target_blueprint_id } : {}),
     blueprint_name: args.blueprint_name ?? 'Test Blueprint',
-    blueprint_description: args.blueprint_description ?? null,
+    ...(args.blueprint_description ? { blueprint_description: args.blueprint_description } : {}),
     stages: (args.stages ?? []) as never,
     participant_templates: (args.participant_templates ?? []) as never,
     requirement_definitions: (args.requirement_definitions ?? []) as never,
