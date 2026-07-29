@@ -109,8 +109,11 @@ export default function NewCasePage() {
 
     const response = await createCaseAction({
       title,
-      // A blank case sends no blueprint; the wizard's demo blueprints are not yet real rows.
+      // A blank case sends no blueprint; the wizard's demo blueprints are not yet real rows, so
+      // every participant here is still 'manual' under the new discriminated contract. Task 6
+      // rewrites this wizard to source real Blueprints and emit 'blueprint' participants.
       participants: participants.map((p) => ({
+        source: "manual" as const,
         roleLabel: p.role,
         fullName: p.name,
         email: p.email,
