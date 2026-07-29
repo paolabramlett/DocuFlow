@@ -16,20 +16,37 @@ import { createClient } from "@/lib/supabase/server";
  * lets verifyOtp() run here, where the server client can write the resulting session directly to
  * the response cookies — so by the time /set-password loads, the correct session is already the
  * only one that exists.
+ *
+ * On failure (missing/expired/already-used token), any pre-existing session must be cleared, not
+ * just left alone: /set-password infers link validity from "someone is authenticated," so leaving
+ * an old session in place after a failed exchange reopens the exact bug this route exists to
+ * close — a visitor's own stale session would silently pass as "valid link".
+ *
+ * `next` only ever comes from links this app generates itself (both templates hardcode
+ * `next=/set-password`), but it is unauthenticated, attacker-writable query input on a public GET
+ * route, so it is restricted to an internal path rather than trusted as an arbitrary redirect
+ * target.
  */
+function isSafeNextPath(value: string | null): value is `/${string}` {
+  return value !== null && value.startsWith("/") && !value.startsWith("//");
+}
+
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
   const tokenHash = searchParams.get("token_hash");
   const type = searchParams.get("type") as EmailOtpType | null;
-  const next = searchParams.get("next") ?? "/set-password";
+  const nextParam = searchParams.get("next");
+  const next = isSafeNextPath(nextParam) ? nextParam : "/set-password";
+
+  const supabase = await createClient();
 
   if (tokenHash && type) {
-    const supabase = await createClient();
     const { error } = await supabase.auth.verifyOtp({ type, token_hash: tokenHash });
     if (!error) {
       redirect(next);
     }
   }
 
+  await supabase.auth.signOut();
   redirect("/set-password");
 }

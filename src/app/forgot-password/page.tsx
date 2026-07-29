@@ -15,11 +15,12 @@ export default function ForgotPasswordPage() {
     setPending(true);
     setError(null);
 
+    // No redirectTo here: recovery.html builds its link from {{ .SiteURL }}/auth/confirm directly
+    // and never references {{ .RedirectTo }}, so a value passed here would be silently ignored.
+    // The email's destination is owned entirely by the template + the project's Site URL setting.
     const normalizedEmail = email.trim().toLowerCase();
     const supabase = createClient();
-    const { error: resetError } = await supabase.auth.resetPasswordForEmail(normalizedEmail, {
-      redirectTo: `${window.location.origin}/set-password`,
-    });
+    const { error: resetError } = await supabase.auth.resetPasswordForEmail(normalizedEmail);
     setPending(false);
 
     if (resetError) {
