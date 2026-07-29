@@ -165,7 +165,7 @@ describe('save_blueprint: atomicity', () => {
 });
 
 describe('save_blueprint: concurrency', () => {
-  it('serializes two concurrent edits to the same Blueprint via the FOR UPDATE lock', async () => {
+  it('serializes two concurrent full-replace edits without merging their child rows', async () => {
     const { organizationId, owner } = await createOrganizationWithOwner('Notaría RPC Concurrency', 'notary');
     const { data: blueprintId } = await callSaveBlueprint(owner.client, {
       target_organization_id: organizationId,
@@ -177,11 +177,18 @@ describe('save_blueprint: concurrency', () => {
         target_organization_id: organizationId,
         target_blueprint_id: blueprintId,
         blueprint_name: 'Writer A',
+        stages: [
+          { name: 'Writer A Stage 1', position: 0 },
+          { name: 'Writer A Stage 2', position: 1 },
+        ],
       }),
       callSaveBlueprint(owner.client, {
         target_organization_id: organizationId,
         target_blueprint_id: blueprintId,
         blueprint_name: 'Writer B',
+        stages: [
+          { name: 'Writer B Stage 1', position: 0 },
+        ],
       }),
     ]);
 
@@ -189,7 +196,27 @@ describe('save_blueprint: concurrency', () => {
     expect(second.error).toBeNull();
 
     const { data: row } = await owner.client.from('blueprints').select('name').eq('id', blueprintId!).single();
-    expect(['Writer A', 'Writer B']).toContain(row?.name);
+    const { data: stages } = await owner.client
+      .from('blueprint_stages')
+      .select('name')
+      .eq('blueprint_id', blueprintId!)
+      .order('position');
+
+    const stageNames = (stages ?? []).map((s) => s.name);
+
+    // The two writers' stage sets are disjoint by name and different in count (2 vs 1), so any
+    // interleaving of the delete-then-reinsert pair across the two transactions — which the FOR
+    // UPDATE lock exists specifically to prevent — would produce either a 3-row merge of both
+    // writers' stages, a partial/empty result, or a set that doesn't match the same writer's name
+    // that won on the parent row. Asserting the two must agree, and must be exactly one writer's
+    // full set, is what actually exercises the lock rather than merely Postgres's baseline
+    // single-row UPDATE atomicity.
+    if (row?.name === 'Writer A') {
+      expect(stageNames).toEqual(['Writer A Stage 1', 'Writer A Stage 2']);
+    } else {
+      expect(row?.name).toBe('Writer B');
+      expect(stageNames).toEqual(['Writer B Stage 1']);
+    }
   });
 });
 
