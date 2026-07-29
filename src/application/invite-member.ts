@@ -107,9 +107,9 @@ export async function inviteMember(
   if (existingAuthUser) {
     invitedAuthUserId = existingAuthUser.id;
   } else {
-    const { data: created, error: inviteError } = await admin.auth.admin.inviteUserByEmail(normalizedEmail, {
-      redirectTo: `${APP_ORIGIN}/set-password`,
-    });
+    // No redirectTo here: invite.html builds its link from {{ .SiteURL }}/auth/confirm directly
+    // and never references {{ .RedirectTo }}, so a value passed here would be silently ignored.
+    const { data: created, error: inviteError } = await admin.auth.admin.inviteUserByEmail(normalizedEmail);
     if (inviteError || !created.user) {
       throw new Error(`Could not invite user: ${inviteError?.message ?? 'no user returned'}`);
     }

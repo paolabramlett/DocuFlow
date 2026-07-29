@@ -27,8 +27,15 @@ import { createClient } from "@/lib/supabase/server";
  * route, so it is restricted to an internal path rather than trusted as an arbitrary redirect
  * target.
  */
+// A leading-slash-and-nothing-else check is not enough: browsers parse a leading "/\" or a
+// tab/newline right after the first "/" (e.g. "/\evil.com", "/%09/evil.com" decoded to a literal
+// tab) as a scheme-relative URL pointing at an external host, not as an internal path. Requiring
+// every character to come from a small, explicit allowlist closes that off entirely, rather than
+// trying to enumerate every bypass of a "starts with /, doesn't start with //" check.
+const SAFE_NEXT_PATH = /^\/[A-Za-z0-9\-._~/]*$/;
+
 function isSafeNextPath(value: string | null): value is `/${string}` {
-  return value !== null && value.startsWith("/") && !value.startsWith("//");
+  return value !== null && SAFE_NEXT_PATH.test(value) && !value.startsWith("//");
 }
 
 export async function GET(request: NextRequest) {
