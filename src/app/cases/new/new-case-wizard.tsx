@@ -305,7 +305,12 @@ export function NewCaseWizard({
             <>
               {failure && <FailureBanner failure={failure} onDismiss={() => setFailure(null)} />}
               {step === 0 && (
-                <StepBlueprint blueprints={blueprints} selectedId={blueprintId} onChoose={chooseBlueprint} />
+                <StepBlueprint
+                  blueprints={blueprints}
+                  selectedId={blueprintId}
+                  blueprintChosen={blueprintChosen}
+                  onChoose={chooseBlueprint}
+                />
               )}
               {step === 1 && (
                 <StepParticipants
@@ -400,10 +405,12 @@ export function NewCaseWizard({
 function StepBlueprint({
   blueprints,
   selectedId,
+  blueprintChosen,
   onChoose,
 }: {
   blueprints: BlueprintSummary[];
   selectedId: string | null;
+  blueprintChosen: boolean;
   onChoose: (b: BlueprintSummary | null) => void;
 }) {
   return (
@@ -448,7 +455,7 @@ function StepBlueprint({
           key="blank"
           onClick={() => onChoose(null)}
           className={`rounded-card border bg-surface p-5 text-left transition-all ${
-            selectedId === null ? "border-royal-600 shadow-md ring-1 ring-royal-600" : "border-border hover:border-royal-100 hover:shadow-sm"
+            blueprintChosen && selectedId === null ? "border-royal-600 shadow-md ring-1 ring-royal-600" : "border-border hover:border-royal-100 hover:shadow-sm"
           }`}
         >
           <div className="flex size-10 items-center justify-center rounded-input bg-royal-50 text-royal-600">
