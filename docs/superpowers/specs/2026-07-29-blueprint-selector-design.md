@@ -248,23 +248,25 @@ security boundary — `.strict()` on both branches is what actually makes "manua
 include blueprint-only fields" true, since `z.object()` silently strips unknown keys by default
 rather than rejecting them):
 ```ts
-const slugKeySchema = z
-  .string()
-  .trim()
-  .min(1)
-  .max(200)
-  .regex(/^[a-z0-9]+(-[a-z0-9]+)*$/, 'Debe ser un identificador en formato slug');
+const slugPattern = /^[a-z0-9]+(-[a-z0-9]+)*$/;
+// Two separate schemas, not one shared with a single max length: role_key's DB column allows only
+// 100 chars (blueprint_participant_templates' own check constraint), requirement keys allow 200 —
+// the input contract should match what's actually persisted, not just "some slug".
+const roleKeySchema = z.string().trim().min(1).max(100)
+  .regex(slugPattern, 'Debe ser un identificador en formato slug');
+const requirementKeySchema = z.string().trim().min(1).max(200)
+  .regex(slugPattern, 'Debe ser un identificador en formato slug');
 // Structural validation only — the server still checks every key against the Blueprint's real
 // allowlist regardless of whether it's well-formed.
 
 const participantSchema = z.discriminatedUnion('source', [
   z.object({
     source: z.literal('blueprint'),
-    participantTemplateRoleKey: slugKeySchema,
+    participantTemplateRoleKey: roleKeySchema,
     roleLabel: z.string().trim().min(1).max(100),
     fullName: z.string().trim().min(1).max(200),
     email: z.string().trim().toLowerCase().email().max(320),
-    requirementKeys: z.array(slugKeySchema)
+    requirementKeys: z.array(requirementKeySchema)
       .refine((keys) => new Set(keys).size === keys.length, 'Duplicate requirement keys'),
   }).strict(),
   z.object({
@@ -325,6 +327,7 @@ synthetic "Expediente en blanco" option (unchanged, `id: null`).
 async function applyBlueprint(summary: BlueprintSummary | null) {
   if (summary === null) {
     setBlueprintId(null); setBlueprintDefinition(null); setTitle(''); setParticipants([]);
+    setIsDirty(false); // clearing the wizard is itself an "applied" state, not a dirty one
     return;
   }
   const result = await getBlueprintDefinitionAction(summary.id);
@@ -344,6 +347,12 @@ async function applyBlueprint(summary: BlueprintSummary | null) {
   );
   setIsDirty(false); // prefill itself is never "dirty"
 }
+```
+`setIsDirty(false)` appears in both branches rather than once after an `if/else`, since the
+blank-case branch returns early — but the *rule* is singular: every successful call to
+`applyBlueprint`, blank or real, always ends in a clean state. Missing this on the blank-case path
+would otherwise let a stale `isDirty = true` cause the *next* Blueprint pick to open the confirm
+modal even though the user just confirmed clearing everything.
 ```
 Manually-added participants (Step 2's existing "Agregar participante" button) are always
 `source: 'manual'`, regardless of whether a Blueprint is active.
@@ -444,11 +453,13 @@ manual shape; duplicate/empty `requirementKeys` rejected; a payload cannot omit 
 `source`.
 
 **D. `createCaseWithParticipants` orchestration tests** — the security-sensitive core. The Blueprint
-definition is fetched and validated exactly once whenever `blueprintId` is present, **regardless of
-participant sources** — including a case with only `'manual'` participants, a role-less Blueprint, a
-Case with zero participants (rejected earlier for an unrelated reason, but the fetch-once rule still
-applies to whatever participants exist), and a crafted/foreign `blueprintId` bypassing the wizard
-entirely (→ `UseCaseError('not_found')`, never silently ignored). Missing `blueprintId` on a
+definition is fetched and validated exactly once whenever `blueprintId` is present on a *valid*
+payload, **regardless of participant sources** — including a case with only `'manual'` participants,
+a role-less Blueprint, and a crafted/foreign `blueprintId` bypassing the wizard entirely (→
+`UseCaseError('not_found')`, never silently ignored). A payload with an empty participants array is
+rejected by the input schema before orchestration ever runs — that's an existing, unrelated
+`min(1, ...)` rule, not a case this fetch-once behavior needs to cover, since
+`createCaseWithParticipants` is never called with it in the first place. Missing `blueprintId` on a
 `'blueprint'` participant / an unknown role key → `UseCaseError('validation')`. Selected allowed
 keys create requirements; deselected allowed keys are omitted; injected unknown keys are filtered
 out (the request still succeeds); persisted labels come from the Blueprint, never client input; a
