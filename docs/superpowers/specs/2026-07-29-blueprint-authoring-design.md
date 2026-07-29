@@ -74,6 +74,22 @@ Schema/RPC (atomic save_blueprint + delete)
 
 **Migration** `supabase/migrations/20260729130000_blueprint_authoring.sql`:
 ```sql
+-- Guard first: adding the constraint below fails opaquely if any existing row already violates
+-- it. This assertion turns that into a diagnosable migration error instead of a raw constraint
+-- failure with no indication of which rows are at fault.
+do $$
+begin
+  if exists (
+    select 1
+    from public.blueprint_participant_templates
+    group by blueprint_id, position
+    having count(*) > 1
+  ) then
+    raise exception 'Cannot add participant-template position constraint: duplicate positions exist';
+  end if;
+end;
+$$;
+
 -- Participant-template position becomes load-bearing once a real write path exists (previously
 -- app-layer-only, per the prior spec's design note). Mirrors blueprint_stages' own constraint.
 alter table public.blueprint_participant_templates
@@ -119,33 +135,59 @@ begin
     raise exception using errcode = 'P0001', message = 'not_owner';
   end if;
 
-  -- 2. Edit-mode existence check. Under security invoker, this select still passes through
-  --    blueprints' member-read RLS policy — a cross-org id or a genuinely missing one both land
-  --    here as "not found," which is the point: this must not distinguish the two.
+  -- 2. Payload shape: jsonb_array_elements() throws an uncontrolled error on anything that isn't
+  --    a JSON array (object, string, number, boolean), so this must be checked before any of the
+  --    array-iterating validation below runs, not just SQL NULL via coalesce above.
+  if jsonb_typeof(stages_in) <> 'array' then
+    raise exception using errcode = 'P0001', message = 'invalid_stages_payload';
+  end if;
+  if jsonb_typeof(templates_in) <> 'array' then
+    raise exception using errcode = 'P0001', message = 'invalid_participant_templates_payload';
+  end if;
+  if jsonb_typeof(requirements_in) <> 'array' then
+    raise exception using errcode = 'P0001', message = 'invalid_requirements_payload';
+  end if;
+
+  -- 3. Edit-mode existence check, row-locked. FOR UPDATE serializes concurrent full-replace edits
+  --    to the same Blueprint for the rest of this transaction — without it, two concurrent calls
+  --    could interleave their child deletes/inserts and produce constraint failures or confusing
+  --    last-writer outcomes. Under security invoker, this select still passes through blueprints'
+  --    member-read RLS policy — a cross-org id or a genuinely missing one both land here as "not
+  --    found," which is the point: this must not distinguish the two.
   if target_blueprint_id is not null then
     select id into existing_id
     from public.blueprints
     where id = target_blueprint_id
-      and organization_id = target_organization_id;
+      and organization_id = target_organization_id
+    for update;
 
     if existing_id is null then
       raise exception using errcode = 'P0001', message = 'blueprint_not_found';
     end if;
   end if;
 
-  -- 3. Basic parent-field shape checks.
+  -- 4. Basic parent-field shape checks.
   if blueprint_name is null or length(btrim(blueprint_name)) = 0 or length(btrim(blueprint_name)) > 200 then
     raise exception using errcode = 'P0001', message = 'invalid_blueprint_name';
   end if;
-  if blueprint_description is not null and length(blueprint_description) > 2000 then
+  if blueprint_description is not null and length(btrim(blueprint_description)) > 2000 then
     raise exception using errcode = 'P0001', message = 'invalid_blueprint_description';
   end if;
 
-  -- 4. Stage shape + duplicate position.
+  -- 5. Stage shape + duplicate position. Every required field gets an explicit `is null` branch
+  --    first: PostgreSQL's three-valued logic means `elem->>'name' is null` is NOT the same as
+  --    the regex/length checks failing — a missing key makes `->>'x' !~ '...'` evaluate to NULL,
+  --    not TRUE, so the row would silently pass the `where` filter and never rejects. Numeric
+  --    fields are validated as digit strings BEFORE any `::int` cast — an unchecked cast on a
+  --    direct caller's malformed input (e.g. `"position": "abc"`) would otherwise raise an
+  --    uncontrolled PostgreSQL error instead of a clean, mapped validation error.
   if exists (
     select 1 from jsonb_array_elements(stages_in) elem
     where jsonb_typeof(elem) <> 'object'
-       or elem->>'name' is null or length(btrim(elem->>'name')) = 0
+       or elem->>'name' is null
+       or length(btrim(elem->>'name')) = 0
+       or length(btrim(elem->>'name')) > 200
+       or elem->>'position' is null
        or elem->>'position' !~ '^[0-9]+$'
   ) then
     raise exception using errcode = 'P0001', message = 'invalid_stage_shape';
@@ -160,12 +202,17 @@ begin
     raise exception using errcode = 'P0001', message = 'duplicate_stage_position';
   end if;
 
-  -- 5. Participant-template shape + duplicate role_key / position.
+  -- 6. Participant-template shape + duplicate role_key / position.
   if exists (
     select 1 from jsonb_array_elements(templates_in) elem
     where jsonb_typeof(elem) <> 'object'
+       or elem->>'role_key' is null
+       or length(elem->>'role_key') > 100
        or elem->>'role_key' !~ '^[a-z0-9]+(-[a-z0-9]+)*$'
-       or elem->>'display_name' is null or length(btrim(elem->>'display_name')) = 0
+       or elem->>'display_name' is null
+       or length(btrim(elem->>'display_name')) = 0
+       or length(btrim(elem->>'display_name')) > 200
+       or elem->>'position' is null
        or elem->>'position' !~ '^[0-9]+$'
   ) then
     raise exception using errcode = 'P0001', message = 'invalid_participant_template_shape';
@@ -189,16 +236,30 @@ begin
     raise exception using errcode = 'P0001', message = 'duplicate_participant_position';
   end if;
 
-  -- 6. Requirement shape, scope validity, and orphan references.
+  -- 7. Requirement shape, scope validity, and orphan references. `participant_role_key` absent
+  --    and `participant_role_key: null` both read as SQL NULL through `->>` — treated identically
+  --    here, on purpose (see the prose note below the function on this canonicalization choice).
   if exists (
     select 1 from jsonb_array_elements(requirements_in) req
     where jsonb_typeof(req) <> 'object'
+       or req->>'key' is null
+       or length(req->>'key') > 200
        or req->>'key' !~ '^[a-z0-9]+(-[a-z0-9]+)*$'
-       or req->>'type' is null or length(btrim(req->>'type')) = 0
-       or req->>'label' is null or length(btrim(req->>'label')) = 0
+       or req->>'type' is null
+       or length(btrim(req->>'type')) = 0
+       or length(btrim(req->>'type')) > 100
+       or req->>'label' is null
+       or length(btrim(req->>'label')) = 0
+       or length(btrim(req->>'label')) > 300
+       or (req->>'instructions' is not null and length(req->>'instructions') > 2000)
+       or req->>'scope' is null
        or req->>'scope' not in ('case', 'participant')
        or (req->>'scope' = 'participant' and (req->>'participant_role_key' is null or length(btrim(req->>'participant_role_key')) = 0))
        or (req->>'scope' = 'case' and req->>'participant_role_key' is not null)
+       or (
+         req->>'stage_position' is not null
+         and req->>'stage_position' !~ '^[0-9]+$'
+       )
   ) then
     raise exception using errcode = 'P0001', message = 'invalid_requirement_shape';
   end if;
@@ -214,6 +275,7 @@ begin
     raise exception using errcode = 'P0001', message = 'unknown_participant_role_key';
   end if;
 
+  -- Safe to cast now: the shape check above already rejected any non-digit-string stage_position.
   if exists (
     select 1 from jsonb_array_elements(requirements_in) req
     where req->>'stage_position' is not null
@@ -237,7 +299,7 @@ begin
     raise exception using errcode = 'P0001', message = 'duplicate_requirement_key';
   end if;
 
-  -- 7. Write. Create: insert parent, then children. Edit: replace children, then update parent
+  -- 8. Write. Create: insert parent, then children. Edit: replace children, then update parent
   --    last — the parent write is the definitive "this Blueprint's new shape" commit point,
   --    though the whole function is one transaction regardless of internal order.
   if target_blueprint_id is null then
@@ -274,6 +336,13 @@ begin
         requirement_definitions = requirements_in,
         updated_at = now()
     where id = target_blueprint_id and organization_id = target_organization_id;
+
+    -- Defensive only: the FOR UPDATE lock above already guarantees this row exists and is ours
+    -- for the rest of the transaction. Kept explicit so the function's contract doesn't silently
+    -- depend on that lock remaining in place if this function is ever refactored.
+    if not found then
+      raise exception using errcode = 'P0001', message = 'blueprint_not_found';
+    end if;
   end if;
 
   return new_blueprint_id;
@@ -286,6 +355,17 @@ grant execute on function public.save_blueprint(uuid, uuid, text, text, jsonb, j
 
 **Empty arrays** are valid throughout — `stages_in`/`templates_in`/`requirements_in` default to
 `'[]'::jsonb`, and every validation/insert query over an empty array is simply a no-op.
+
+**Missing key vs. explicit JSON `null`**: `->>'field'` produces SQL `NULL` for both an absent key
+and an explicit `"field": null`, and every check in this function relies on that equivalence — a
+`case`-scoped requirement with `"participant_role_key": null` is treated identically to one that
+omits the field entirely. This is intentional, not an accidental consequence of the `->>` operator:
+`toPersistenceJson` (the use-case-layer serializer, section 4) never emits an optional key with an
+explicit `null` value — it omits the key outright — so in practice only the read path could ever
+receive one, and it already treats both the same way today (`getBlueprintDefinition`'s existing
+`participantRoleKeyRaw !== undefined && participantRoleKeyRaw !== null` check, unchanged by this
+spec). Canonicalizing the two here keeps the RPC consistent with that pre-existing read behavior
+rather than introducing a second standard.
 
 **Deletion** uses no RPC. `deleteBlueprint` is a plain
 `delete from blueprints where id = ? and organization_id = ?`, relying on the existing owner-only
@@ -405,6 +485,9 @@ export const saveBlueprintSchema = z.object({
 4. Map the RPC's error `.message` (its stable code) through a **closed** table:
    ```ts
    const RPC_VALIDATION_MESSAGES: Record<string, string> = {
+     invalid_stages_payload: 'El formato de las etapas no es válido.',
+     invalid_participant_templates_payload: 'El formato de los roles de participante no es válido.',
+     invalid_requirements_payload: 'El formato de los requisitos no es válido.',
      invalid_blueprint_name: 'El nombre de la plantilla no es válido.',
      invalid_blueprint_description: 'La descripción es demasiado larga.',
      invalid_stage_shape: 'Una etapa tiene datos inválidos.',
@@ -438,7 +521,15 @@ const { data, error } = await client
   .select('id')
   .maybeSingle();
 
-if (error) throw new UseCaseError('forbidden', 'No pudimos eliminar la plantilla.');
+if (error) {
+  // Only a recognized permission-denied error maps to 'forbidden' — a network failure, malformed
+  // query, or unexpected trigger error is not an authorization failure and must not be disguised
+  // as one (matches the same closed-mapping principle used for the save path's RPC errors).
+  if (error.code === '42501') {
+    throw new UseCaseError('forbidden', 'No tienes permiso para eliminar esta plantilla.');
+  }
+  throw error;
+}
 if (!data) throw new UseCaseError('not_found', 'La plantilla no existe o ya fue eliminada.');
 
 await logDomainEvent(client, { ..., action: 'blueprint.deleted', ... });
@@ -473,8 +564,16 @@ export async function getBlueprintDefinitionAction(blueprintId: string): Promise
 }
 ```
 The owner check mirrors `src/app/settings/actions.ts`'s `updateOrganizationAction` exactly — a
-fast, user-facing rejection here, with `saveBlueprint`/`deleteBlueprint` re-checking independently
-via the RPC's `not_owner` code / RLS, and RLS as the final floor.
+fast, user-facing rejection here. The independent re-check below the Server Action differs by
+operation, and the prose should say so precisely rather than imply symmetry:
+- `saveBlueprint`: an **explicit** `app.is_org_owner` check inside the RPC itself (section 2, step
+  1), plus owner-only RLS on every table it writes to.
+- `deleteBlueprint`: **no explicit ownership query** — it relies solely on the existing
+  `blueprints_write_by_owner`-style RLS policy to make the `delete` affect zero rows for a
+  non-owner, which surfaces as the same `not_found` a caller would see for a nonexistent id. This
+  is an intentional asymmetry, not an oversight: adding an explicit ownership round-trip to
+  `deleteBlueprint` would be a second query for a check RLS already performs for free on a
+  single-statement delete, and no other single-statement delete in this codebase does that either.
 
 Final layering:
 ```
@@ -655,6 +754,23 @@ matching the existing `blueprint-queries.test.ts` convention, not mocks):
   is rejected by the new unique constraint, independent of the RPC.
 - `cross-tenant-sweep.test.ts` / `schema-guard.test.ts`: re-read both files at implementation time
   to confirm no new table or composite FK was introduced (this migration only adds a constraint).
+- **Malformed direct-call payloads** (each exercising a specific defensive check added in this
+  round of review, not just the happy path): `stages: {}` (object instead of array) →
+  `invalid_stages_payload`; a participant template missing `role_key` entirely →
+  `invalid_participant_template_shape` (proves the explicit `is null` branch actually catches an
+  absent field, not just a malformed one); a requirement missing `scope` →
+  `invalid_requirement_shape`; a requirement with `stage_position: "abc"` → `invalid_requirement_shape`
+  (proves the numeric-string check runs, and runs, before any `::int` cast is attempted); a stage
+  `name` of 201 characters, a `role_key` of 101 characters, a requirement `label` of 301
+  characters, `type` of 101 characters, and `instructions` of 2001 characters → each its
+  corresponding `invalid_*_shape` code; a requirement with `participant_role_key: null` under
+  `scope: 'case'` → accepted (proves explicit JSON `null` and an absent key are treated
+  identically, per the documented canonicalization).
+- **Concurrent edits**: two overlapping `save_blueprint` calls targeting the same
+  `blueprintId`, launched without waiting for the first to commit — confirms the second call
+  blocks on the `FOR UPDATE` lock until the first transaction finishes rather than interleaving
+  deletes/inserts, and that the final state is exactly one call's full payload, never a mix of
+  both.
 
 **UI behavior** — manual verification checklist (no component-testing infrastructure, same
 convention as the prior spec):
