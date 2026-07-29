@@ -353,7 +353,7 @@ blank-case branch returns early — but the *rule* is singular: every successful
 `applyBlueprint`, blank or real, always ends in a clean state. Missing this on the blank-case path
 would otherwise let a stale `isDirty = true` cause the *next* Blueprint pick to open the confirm
 modal even though the user just confirmed clearing everything.
-```
+
 Manually-added participants (Step 2's existing "Agregar participante" button) are always
 `source: 'manual'`, regardless of whether a Blueprint is active.
 
