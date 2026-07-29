@@ -117,11 +117,33 @@ export async function createCaseWithParticipants(
     }
   }
 
+  // Every participant-level input error is caught here, before any write happens — including the
+  // role-key check, which needs blueprintDefinition but is still pure validation against data
+  // already in hand. Doing this later, inside the write loop, would let a rejected request leave
+  // a partial Case behind (its own Case row, cloned stages, and any already-created participants).
+  const allowedByRole = new Map<string, Map<string, string>>();
   for (const p of participants) {
-    if (p.source === "blueprint" && !blueprintId) {
+    if (p.source !== "blueprint") continue;
+    if (!blueprintId) {
       throw new UseCaseError(
         "validation",
         "Un participante de plantilla requiere una plantilla seleccionada.",
+      );
+    }
+    if (!allowedByRole.has(p.participantTemplateRoleKey)) {
+      const roleExists = blueprintDefinition!.participantTemplates.some(
+        (t) => t.roleKey === p.participantTemplateRoleKey,
+      );
+      if (!roleExists) {
+        throw new UseCaseError("validation", "El rol de participante no existe en esta plantilla.");
+      }
+      allowedByRole.set(
+        p.participantTemplateRoleKey,
+        new Map(
+          blueprintDefinition!.requirements
+            .filter((r) => r.scope === "participant" && r.participantRoleKey === p.participantTemplateRoleKey)
+            .map((r) => [r.key, r.label] as const),
+        ),
       );
     }
   }
@@ -169,28 +191,19 @@ export async function createCaseWithParticipants(
     });
 
     // Resolve this participant's actual Requirement labels. For a 'blueprint' participant, the
-    // Blueprint is the allowlist: the client can narrow (deselect), never expand or invent — an
-    // unknown key, or a key that exists only under a different role, is silently filtered out,
-    // never a rejection of the whole request. The persisted label is always the Blueprint's own
-    // canonical text, never anything the client sent. 'manual' participants keep today's existing,
-    // unrestricted freeform behaviour, in every combination (alone, with an active Blueprint,
-    // mixed with a 'blueprint' participant in the same Case) — their suggestions are a convenience
-    // pool only; they are never bound to any role_key.
+    // Blueprint is the allowlist (already validated and precomputed above, before any write): the
+    // client can narrow (deselect), never expand or invent — an unknown key, or a key that exists
+    // only under a different role, is silently filtered out, never a rejection of the whole
+    // request. The persisted label is always the Blueprint's own canonical text, never anything
+    // the client sent. 'manual' participants keep today's existing, unrestricted freeform
+    // behaviour, in every combination (alone, with an active Blueprint, mixed with a 'blueprint'
+    // participant in the same Case) — their suggestions are a convenience pool only; they are
+    // never bound to any role_key.
     let effectiveLabels: string[];
     if (p.source === "manual") {
       effectiveLabels = p.requirements;
     } else {
-      const roleExists = blueprintDefinition!.participantTemplates.some(
-        (t) => t.roleKey === p.participantTemplateRoleKey,
-      );
-      if (!roleExists) {
-        throw new UseCaseError("validation", "El rol de participante no existe en esta plantilla.");
-      }
-      const allowedByKey = new Map(
-        blueprintDefinition!.requirements
-          .filter((r) => r.scope === "participant" && r.participantRoleKey === p.participantTemplateRoleKey)
-          .map((r) => [r.key, r.label] as const),
-      );
+      const allowedByKey = allowedByRole.get(p.participantTemplateRoleKey)!;
       effectiveLabels = p.requirementKeys
         .filter((key) => allowedByKey.has(key))
         .map((key) => allowedByKey.get(key)!);

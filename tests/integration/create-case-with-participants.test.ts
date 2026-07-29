@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createOrganizationWithOwner, addStaffMember } from '../helpers/clients';
+import { createOrganizationWithOwner } from '../helpers/clients';
 import {
   createCaseWithParticipants,
   createCaseWithParticipantsSchema,
@@ -108,7 +108,6 @@ describe('createCaseWithParticipantsSchema', () => {
 describe('createCaseWithParticipants orchestration', () => {
   async function orgWithBlueprint() {
     const { organizationId, owner } = await createOrganizationWithOwner('Notaría Orchestration', 'notary');
-    const staff = await addStaffMember(owner, organizationId);
     const { data: blueprint } = await owner.client
       .from('blueprints')
       .insert({
@@ -126,7 +125,7 @@ describe('createCaseWithParticipants orchestration', () => {
       { organization_id: organizationId, blueprint_id: blueprint!.id, role_key: 'buyer', display_name: 'Comprador', position: 0 },
       { organization_id: organizationId, blueprint_id: blueprint!.id, role_key: 'seller', display_name: 'Vendedor', position: 1 },
     ]);
-    return { organizationId, owner, staff, blueprintId: blueprint!.id };
+    return { organizationId, owner, blueprintId: blueprint!.id };
   }
 
   it('fetches the blueprint definition exactly once per call, even with multiple participants', async () => {
@@ -167,6 +166,44 @@ describe('createCaseWithParticipants orchestration', () => {
         sendInvitations: false,
       }, owner.userId),
     ).rejects.toMatchObject({ reason: 'validation' });
+  });
+
+  it('rejects an unknown role key before any write, leaving no partial Case behind', async () => {
+    // The role-key check runs in a pre-write pass, before createCase — a rejected request must not
+    // leave behind a Case row, cloned stages, or an earlier participant's rows.
+    const { organizationId, owner, blueprintId } = await orgWithBlueprint();
+    const title = `No partial case ${randomUUID()}`;
+    await expect(
+      createCaseWithParticipants(owner.client, {
+        organizationId, title, blueprintId,
+        participants: [
+          { source: 'blueprint', participantTemplateRoleKey: 'buyer', roleLabel: 'Comprador', fullName: 'Ana', email: `ana-${randomUUID()}@example.test`, requirementKeys: ['official-id'] },
+          { source: 'blueprint', participantTemplateRoleKey: 'nonexistent', roleLabel: 'X', fullName: 'Luis', email: `luis-${randomUUID()}@example.test`, requirementKeys: [] },
+        ],
+        sendInvitations: false,
+      }, owner.userId),
+    ).rejects.toMatchObject({ reason: 'validation' });
+
+    const { data: cases } = await owner.client.from('cases').select('id').eq('title', title);
+    expect(cases).toEqual([]);
+  });
+
+  it('filters out a case-scoped key submitted as a participant requirementKey', async () => {
+    // 'appraisal' is defined with scope: 'case' in orgWithBlueprint's fixture — it must never be
+    // reachable through a participant's allowlist, regardless of role.
+    const { organizationId, owner, blueprintId } = await orgWithBlueprint();
+    const result = await createCaseWithParticipants(owner.client, {
+      organizationId, title: 'Case-scope leak attempt', blueprintId,
+      participants: [{ source: 'blueprint', participantTemplateRoleKey: 'buyer', roleLabel: 'Comprador', fullName: 'Ana', email: `ana-${randomUUID()}@example.test`, requirementKeys: ['appraisal'] }],
+      sendInvitations: false,
+    }, owner.userId);
+
+    const { data: requirements } = await owner.client
+      .from('requirements')
+      .select('label')
+      .eq('case_id', result.caseId)
+      .eq('participant_id', result.participants[0]!.id);
+    expect(requirements).toEqual([]);
   });
 
   it('rejects a crafted/foreign blueprintId even with only manual participants', async () => {
