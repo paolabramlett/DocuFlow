@@ -79,6 +79,96 @@ async function main() {
   const org = await insert("organizations", { name: "Notaría Central", industry: "notary" });
   await insert("members", { organization_id: org.id, user_id: staffId, role: "owner" }, "id");
 
+  // Helper to create a blueprint with participant templates and requirement definitions.
+  async function createBlueprint({ name, description, requirementDefinitions, participantTemplates = [], stages = [] }) {
+    const blueprint = await insert("blueprints", {
+      organization_id: org.id,
+      name,
+      description: description ?? null,
+      requirement_definitions: requirementDefinitions,
+      is_platform_template: true,
+    });
+
+    for (const t of participantTemplates) {
+      await insert("blueprint_participant_templates", {
+        organization_id: org.id,
+        blueprint_id: blueprint.id,
+        role_key: t.roleKey,
+        display_name: t.displayName,
+        position: t.position,
+      });
+    }
+
+    for (const s of stages) {
+      await insert("blueprint_stages", {
+        organization_id: org.id,
+        blueprint_id: blueprint.id,
+        name: s.name,
+        position: s.position,
+      });
+    }
+
+    return blueprint;
+  }
+
+  // Blueprints — real rows for the Create Case wizard and Plantillas to read. Four shapes,
+  // deliberately covering multi-role, single-role, and role-less Blueprints, plus a deliberate
+  // cross-bucket key reuse (buyer/official-id and seller/official-id) proving bucket-scoped
+  // uniqueness works in practice, not just in theory.
+  await createBlueprint({
+    name: "Compraventa",
+    description: "Venta de un inmueble entre un comprador y un vendedor.",
+    requirementDefinitions: [
+      { key: "official-id", type: "document", label: "INE", scope: "participant", participant_role_key: "buyer" },
+      { key: "curp", type: "document", label: "CURP", scope: "participant", participant_role_key: "buyer" },
+      { key: "official-id", type: "document", label: "INE", scope: "participant", participant_role_key: "seller" },
+      { key: "curp", type: "document", label: "CURP", scope: "participant", participant_role_key: "seller" },
+      { key: "property-title", type: "document", label: "Título de propiedad", scope: "participant", participant_role_key: "seller" },
+      { key: "appraisal", type: "document", label: "Avalúo", scope: "case" },
+    ],
+    participantTemplates: [
+      { roleKey: "buyer", displayName: "Comprador", position: 0 },
+      { roleKey: "seller", displayName: "Vendedor", position: 1 },
+    ],
+  });
+
+  await createBlueprint({
+    name: "Testamento",
+    description: "Testamento otorgado por un solo testador.",
+    requirementDefinitions: [
+      { key: "official-id", type: "document", label: "INE", scope: "participant", participant_role_key: "testator" },
+      { key: "asset-inventory", type: "document", label: "Inventario de bienes", scope: "participant", participant_role_key: "testator" },
+      { key: "witness-data", type: "document", label: "Datos de testigos", scope: "participant", participant_role_key: "testator" },
+    ],
+    participantTemplates: [
+      { roleKey: "testator", displayName: "Testador", position: 0 },
+    ],
+  });
+
+  await createBlueprint({
+    name: "Constitución de sociedad",
+    description: "Constitución con socios fundadores.",
+    requirementDefinitions: [
+      { key: "official-id", type: "document", label: "INE", scope: "participant", participant_role_key: "founding-partner" },
+      { key: "capital-contribution", type: "document", label: "Aportación de capital", scope: "participant", participant_role_key: "founding-partner" },
+      { key: "bylaws", type: "document", label: "Estatutos sociales", scope: "case" },
+    ],
+    participantTemplates: [
+      { roleKey: "founding-partner", displayName: "Socio fundador", position: 0 },
+    ],
+  });
+
+  await createBlueprint({
+    name: "Poder notarial",
+    description: "Poder otorgado por una persona.",
+    requirementDefinitions: [
+      { key: "official-id", type: "document", label: "INE", scope: "case" },
+      { key: "attorney-data", type: "document", label: "Datos del apoderado", scope: "case" },
+      { key: "signed-authorization", type: "document", label: "Autorización firmada", scope: "case" },
+    ],
+    // Deliberately no participantTemplates — proves the "role-less Blueprint" path works.
+  });
+
   // Clients (org-owned records).
   const paola = await insert("clients", { organization_id: org.id, full_name: "Paola Restrepo", email: "paola.restrepo@example.mx" });
   const mateo = await insert("clients", { organization_id: org.id, full_name: "Mateo Restrepo", email: "mateo.restrepo@example.mx" });
