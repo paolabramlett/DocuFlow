@@ -117,6 +117,33 @@ export interface BlueprintDefinition {
   readonly requirements: BlueprintRequirementDefinition[];
 }
 
+export type ValidatedBlueprintStructure = Omit<BlueprintDefinition, 'id'>;
+
+export interface NormalizedBlueprint {
+  name: string;
+  description: string | null;
+  stages: { name: string; position: number }[];
+  participantTemplates: { roleKey: string; displayName: string; position: number }[];
+  requirements: {
+    key: string;
+    type: string;
+    label: string;
+    instructions: string | null;
+    scope: BlueprintRequirementScope;
+    participantRoleKey: string | null;
+    stagePosition: number | null;
+  }[];
+}
+
+/** Thrown by validateBlueprintStructure. No UseCaseError awareness — this is a pure domain module,
+ *  shared by the read path and the write path, and must not depend on the application layer. */
+export class BlueprintIntegrityError extends Error {
+  constructor(readonly code: string, message: string) {
+    super(message);
+    this.name = 'BlueprintIntegrityError';
+  }
+}
+
 interface RawBlueprintDefinitionRow {
   id: string;
   name: string;
@@ -128,14 +155,171 @@ interface RawBlueprintDefinitionRow {
     | null;
 }
 
+/** Read-side normalizer: missing `scope` defaults to 'case' (legacy compatibility — no real
+ *  Blueprint data predates the scope field except test fixtures). */
+export function normalizeBlueprintFromDb(row: RawBlueprintDefinitionRow): NormalizedBlueprint {
+  const rawStages = row.blueprint_stages ?? [];
+  const rawTemplates = row.blueprint_participant_templates ?? [];
+  const definitionsRaw = Array.isArray(row.requirement_definitions) ? row.requirement_definitions : [];
+
+  return {
+    name: row.name,
+    description: row.description,
+    stages: rawStages.map((s) => ({ name: s.name, position: s.position })),
+    participantTemplates: rawTemplates.map((t) => ({
+      roleKey: t.role_key,
+      displayName: t.display_name,
+      position: t.position,
+    })),
+    requirements: definitionsRaw.map((raw) => {
+      const def = (typeof raw === 'object' && raw !== null && !Array.isArray(raw) ? raw : {}) as Record<string, unknown>;
+      return {
+        key: typeof def.key === 'string' ? def.key : '',
+        type: typeof def.type === 'string' ? def.type : 'document',
+        label: typeof def.label === 'string' ? def.label : '',
+        instructions: typeof def.instructions === 'string' ? def.instructions : null,
+        // Only a missing scope defaults to 'case' (legacy compatibility); any other invalid value
+        // (e.g. a typo'd scope string) must pass through unchanged so validateBlueprintStructure's
+        // invalid_scope check actually catches it — silently coercing bad values here would let
+        // corrupt data slip past validation undetected.
+        scope: (def.scope ?? 'case') as BlueprintRequirementScope,
+        participantRoleKey: typeof def.participant_role_key === 'string' ? def.participant_role_key : null,
+        stagePosition: typeof def.stage_position === 'number' ? def.stage_position : null,
+      };
+    }),
+  };
+}
+
+export interface SaveBlueprintDraftInput {
+  name: string;
+  description?: string;
+  stages: { name: string; position: number }[];
+  participantTemplates: { roleKey: string; displayName: string; position: number }[];
+  requirements: (
+    | { scope: 'case'; key: string; type: string; label: string; instructions?: string; stagePosition?: number }
+    | { scope: 'participant'; key: string; type: string; label: string; instructions?: string; stagePosition?: number; participantRoleKey: string }
+  )[];
+}
+
+/** Write-side normalizer: `scope` is required by the input type itself (the discriminated union
+ *  has no third, scope-less branch) — never defaulted. New authoring must never produce
+ *  legacy-shaped data. */
+export function normalizeBlueprintDraft(input: SaveBlueprintDraftInput): NormalizedBlueprint {
+  return {
+    name: input.name,
+    description: input.description ?? null,
+    stages: input.stages.map((s) => ({ name: s.name, position: s.position })),
+    participantTemplates: input.participantTemplates.map((t) => ({
+      roleKey: t.roleKey,
+      displayName: t.displayName,
+      position: t.position,
+    })),
+    requirements: input.requirements.map((r) => ({
+      key: r.key,
+      type: r.type,
+      label: r.label,
+      instructions: r.instructions ?? null,
+      scope: r.scope,
+      participantRoleKey: r.scope === 'participant' ? r.participantRoleKey : null,
+      stagePosition: r.stagePosition ?? null,
+    })),
+  };
+}
+
+/**
+ * The shared, pure domain validator. Called by both the read path (via normalizeBlueprintFromDb)
+ * and the write path (via normalizeBlueprintDraft) — this is the single source of truth for every
+ * Blueprint structural invariant. Throws BlueprintIntegrityError on the first violation found.
+ */
+export function validateBlueprintStructure(input: NormalizedBlueprint): ValidatedBlueprintStructure {
+  const roleKeys = new Set<string>();
+  const templatePositions = new Set<number>();
+  for (const t of input.participantTemplates) {
+    if (!isSlug(t.roleKey)) {
+      throw new BlueprintIntegrityError('invalid_role_key', `Invalid participant-template role_key "${t.roleKey}"`);
+    }
+    if (roleKeys.has(t.roleKey)) {
+      throw new BlueprintIntegrityError('duplicate_role_key', `Duplicate participant-template role_key "${t.roleKey}"`);
+    }
+    roleKeys.add(t.roleKey);
+    if (templatePositions.has(t.position)) {
+      throw new BlueprintIntegrityError('duplicate_participant_position', `Duplicate participant-template position ${t.position}`);
+    }
+    templatePositions.add(t.position);
+  }
+
+  const stagePositions = new Set<number>();
+  for (const s of input.stages) {
+    if (stagePositions.has(s.position)) {
+      throw new BlueprintIntegrityError('duplicate_stage_position', `Duplicate stage position ${s.position}`);
+    }
+    stagePositions.add(s.position);
+  }
+
+  const bucketKeys = new Map<string, Set<string>>();
+  const requirements: BlueprintRequirementDefinition[] = [];
+
+  for (const r of input.requirements) {
+    if (!isSlug(r.key)) {
+      throw new BlueprintIntegrityError('invalid_key', `Invalid or missing key "${r.key}"`);
+    }
+    if (!r.label || r.label.trim().length === 0) {
+      throw new BlueprintIntegrityError('missing_label', `Missing or empty label for key "${r.key}"`);
+    }
+    if (r.scope !== 'case' && r.scope !== 'participant') {
+      throw new BlueprintIntegrityError('invalid_scope', `Invalid scope "${String(r.scope)}" for key "${r.key}"`);
+    }
+    if (r.scope === 'participant') {
+      if (!r.participantRoleKey || r.participantRoleKey.trim().length === 0) {
+        throw new BlueprintIntegrityError('missing_participant_role_key', `Scope "participant" without participantRoleKey for key "${r.key}"`);
+      }
+      if (!roleKeys.has(r.participantRoleKey)) {
+        throw new BlueprintIntegrityError('orphaned_role_key', `Orphaned participantRoleKey "${r.participantRoleKey}" for key "${r.key}"`);
+      }
+    } else if (r.participantRoleKey !== null) {
+      throw new BlueprintIntegrityError('unexpected_participant_role_key', `Scope "case" must not carry participantRoleKey for key "${r.key}"`);
+    }
+
+    if (r.stagePosition !== null && !stagePositions.has(r.stagePosition)) {
+      throw new BlueprintIntegrityError('orphaned_stage_position', `stagePosition ${r.stagePosition} does not exist for key "${r.key}"`);
+    }
+
+    const bucket = r.scope === 'case' ? 'case' : `participant:${r.participantRoleKey}`;
+    const seenInBucket = bucketKeys.get(bucket) ?? new Set<string>();
+    if (seenInBucket.has(r.key)) {
+      throw new BlueprintIntegrityError('duplicate_key', `Duplicate key "${r.key}" in bucket "${bucket}"`);
+    }
+    seenInBucket.add(r.key);
+    bucketKeys.set(bucket, seenInBucket);
+
+    requirements.push({
+      key: r.key,
+      type: r.type,
+      label: r.label,
+      instructions: r.instructions,
+      scope: r.scope,
+      participantRoleKey: r.participantRoleKey,
+      stagePosition: r.stagePosition,
+    });
+  }
+
+  return {
+    name: input.name,
+    description: input.description,
+    stages: [...input.stages].sort((a, b) => a.position - b.position),
+    participantTemplates: [...input.participantTemplates]
+      .sort((a, b) => a.position - b.position)
+      .map((t) => ({ id: '', roleKey: t.roleKey, displayName: t.displayName, position: t.position })),
+    requirements,
+  } as ValidatedBlueprintStructure;
+}
+
 /**
  * The strict, validated Blueprint a Case is actually cloned from.
  *
- * Unlike listBlueprintSummaries, this throws a plain Error (an internal-consistency bug, not a
- * UseCaseError) on the first integrity violation found. The wizard always reads a Blueprint
- * through here before ever creating a Case from it, so this is the real gate — create_case's own
- * `coalesce(scope, 'case')` filter is a last-resort backstop only for direct-DB-manipulation edge
- * cases this function's own validation would already have caught for any app-driven path.
+ * Unlike listBlueprintSummaries, this throws BlueprintIntegrityError (an internal-consistency bug,
+ * not a UseCaseError) on the first integrity violation found — via validateBlueprintStructure,
+ * shared with the write path (saveBlueprint).
  */
 export async function getBlueprintDefinition(
   client: DbClient,
@@ -155,135 +339,44 @@ export async function getBlueprintDefinition(
   if (!data) return null;
 
   const row = data as RawBlueprintDefinitionRow;
-  const rawStages = row.blueprint_stages ?? [];
-  const rawTemplates = row.blueprint_participant_templates ?? [];
-
-  const roleKeys = new Set<string>();
-  const templatePositions = new Set<number>();
-  for (const t of rawTemplates) {
-    if (!isSlug(t.role_key)) {
-      throw new Error(
-        `Blueprint integrity error: invalid participant-template role_key "${t.role_key}" (blueprint ${blueprintId})`,
-      );
-    }
-    if (roleKeys.has(t.role_key)) {
-      throw new Error(
-        `Blueprint integrity error: duplicate participant-template role_key "${t.role_key}" (blueprint ${blueprintId})`,
-      );
-    }
-    roleKeys.add(t.role_key);
-    if (templatePositions.has(t.position)) {
-      throw new Error(
-        `Blueprint integrity error: duplicate participant-template position ${t.position} (blueprint ${blueprintId})`,
-      );
-    }
-    templatePositions.add(t.position);
-  }
-
-  const stagePositions = new Set<number>();
-  for (const s of rawStages) {
-    if (stagePositions.has(s.position)) {
-      throw new Error(`Blueprint integrity error: duplicate stage position ${s.position} (blueprint ${blueprintId})`);
-    }
-    stagePositions.add(s.position);
-  }
-
-  const definitionsRaw = Array.isArray(row.requirement_definitions) ? row.requirement_definitions : [];
-  const bucketKeys = new Map<string, Set<string>>();
-  const requirements: BlueprintRequirementDefinition[] = [];
-
-  for (const raw of definitionsRaw) {
-    if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
-      throw new Error(
-        `Blueprint integrity error: requirement definition is not a plain object (blueprint ${blueprintId})`,
-      );
-    }
-    const def = raw as Record<string, unknown>;
-
-    if (!isSlug(def.key)) {
-      throw new Error(
-        `Blueprint integrity error: invalid or missing key "${String(def.key)}" (blueprint ${blueprintId})`,
-      );
-    }
-    const key = def.key as string;
-
-    if (typeof def.label !== 'string' || def.label.trim().length === 0) {
-      throw new Error(`Blueprint integrity error: missing or empty label for key "${key}" (blueprint ${blueprintId})`);
-    }
-
-    const scopeRaw = def.scope ?? 'case';
-    if (scopeRaw !== 'case' && scopeRaw !== 'participant') {
-      throw new Error(
-        `Blueprint integrity error: invalid scope "${String(scopeRaw)}" for key "${key}" (blueprint ${blueprintId})`,
-      );
-    }
-    const scope = scopeRaw as BlueprintRequirementScope;
-
-    const participantRoleKeyRaw = def.participant_role_key;
-    let participantRoleKey: string | null = null;
-    if (scope === 'participant') {
-      if (typeof participantRoleKeyRaw !== 'string' || participantRoleKeyRaw.trim().length === 0) {
-        throw new Error(
-          `Blueprint integrity error: scope "participant" without participant_role_key for key "${key}" (blueprint ${blueprintId})`,
-        );
-      }
-      if (!roleKeys.has(participantRoleKeyRaw)) {
-        throw new Error(
-          `Blueprint integrity error: orphaned participant_role_key "${participantRoleKeyRaw}" for key "${key}" (blueprint ${blueprintId})`,
-        );
-      }
-      participantRoleKey = participantRoleKeyRaw;
-    } else if (participantRoleKeyRaw !== undefined && participantRoleKeyRaw !== null) {
-      throw new Error(
-        `Blueprint integrity error: scope "case" must not carry participant_role_key for key "${key}" (blueprint ${blueprintId})`,
-      );
-    }
-
-    const stagePositionRaw = def.stage_position;
-    let stagePosition: number | null = null;
-    if (stagePositionRaw !== undefined && stagePositionRaw !== null) {
-      if (typeof stagePositionRaw !== 'number' || !stagePositions.has(stagePositionRaw)) {
-        throw new Error(
-          `Blueprint integrity error: stage_position ${String(stagePositionRaw)} does not exist for key "${key}" (blueprint ${blueprintId})`,
-        );
-      }
-      stagePosition = stagePositionRaw;
-    }
-
-    const bucket = scope === 'case' ? 'case' : `participant:${participantRoleKey}`;
-    const seenInBucket = bucketKeys.get(bucket) ?? new Set<string>();
-    if (seenInBucket.has(key)) {
-      throw new Error(`Blueprint integrity error: duplicate key "${key}" in bucket "${bucket}" (blueprint ${blueprintId})`);
-    }
-    seenInBucket.add(key);
-    bucketKeys.set(bucket, seenInBucket);
-
-    requirements.push({
-      key,
-      type: typeof def.type === 'string' ? def.type : 'document',
-      label: def.label,
-      instructions: typeof def.instructions === 'string' ? def.instructions : null,
-      scope,
-      participantRoleKey,
-      stagePosition,
-    });
-  }
+  // Stage/template ids are needed on the returned shape (BlueprintStage/BlueprintParticipantTemplate
+  // both carry `id`), but NormalizedBlueprint intentionally drops them — they're not a structural
+  // invariant, just DB identity. Re-attach them here by matching on (name, position) / (roleKey,
+  // position), which validateBlueprintStructure's own sort makes safe (positions are already
+  // proven unique by the validator itself).
+  const validated = validateBlueprintStructure(normalizeBlueprintFromDb(row));
+  const rawStagesById = new Map((row.blueprint_stages ?? []).map((s) => [s.position, s.id]));
+  const rawTemplatesById = new Map((row.blueprint_participant_templates ?? []).map((t) => [t.position, t.id]));
 
   return {
     id: row.id,
-    name: row.name,
-    description: row.description,
-    stages: [...rawStages].sort((a, b) => a.position - b.position).map((s) => ({
-      id: s.id,
-      name: s.name,
-      position: s.position,
-    })),
-    participantTemplates: [...rawTemplates].sort((a, b) => a.position - b.position).map((t) => ({
-      id: t.id,
-      roleKey: t.role_key,
-      displayName: t.display_name,
+    name: validated.name,
+    description: validated.description,
+    stages: validated.stages.map((s) => ({ id: rawStagesById.get(s.position) ?? '', name: s.name, position: s.position })),
+    participantTemplates: validated.participantTemplates.map((t) => ({
+      id: rawTemplatesById.get(t.position) ?? '',
+      roleKey: t.roleKey,
+      displayName: t.displayName,
       position: t.position,
     })),
-    requirements, // preserves original JSON array order — that order is their canonical position
+    requirements: validated.requirements,
   };
+}
+
+/** Usage count for the edit screen's persistent banner. Kept separate from BlueprintDefinition —
+ *  a transport-layer concern of the edit route, not part of the pure structural read. An error
+ *  propagates rather than silently reporting 0: an unknown failure must never look like "unused". */
+export async function countCasesUsingBlueprint(
+  client: DbClient,
+  blueprintId: string,
+  organizationId: string,
+): Promise<number> {
+  const { count, error } = await client
+    .from('cases')
+    .select('*', { count: 'exact', head: true })
+    .eq('origin_blueprint_id', blueprintId)
+    .eq('organization_id', organizationId);
+
+  if (error) throw new Error(`countCasesUsingBlueprint: ${error.message}`);
+  return count ?? 0;
 }
