@@ -1,8 +1,7 @@
 /*
- * Plantillas — Server Component. A read-only library: Blueprints are still only ever created
- * outside the app (seed data, or directly in the database) — this page adds no create/edit path.
- * See docs/superpowers/specs/2026-07-29-blueprint-selector-design.md for what's deliberately
- * deferred (owner-facing authoring UI).
+ * Plantillas — Server Component. Owners get authoring controls (Nueva plantilla, Editar,
+ * Duplicar, Eliminar); any staff member can still browse the directory read-only.
+ * See docs/superpowers/specs/2026-07-29-blueprint-authoring-design.md.
  */
 
 import { requireStaff } from "@/features/auth/context";
@@ -20,6 +19,7 @@ export default async function BlueprintsPage() {
   return (
     <BlueprintsDirectory
       blueprints={blueprints}
+      isOwner={staff.role === "owner"}
       account={{ name: staff.organizationName, sub: staff.email }}
     />
   );
