@@ -14,8 +14,8 @@ function base(): NormalizedBlueprint {
     stages: [{ name: 'Firma', position: 0 }],
     participantTemplates: [{ roleKey: 'buyer', displayName: 'Comprador', position: 0 }],
     requirements: [
-      { key: 'title-deed', type: 'document', label: 'Escritura', instructions: null, scope: 'case', participantRoleKey: null, stagePosition: null },
-      { key: 'official-id', type: 'document', label: 'INE', instructions: null, scope: 'participant', participantRoleKey: 'buyer', stagePosition: 0 },
+      { key: 'title-deed', type: 'document', label: 'Escritura', instructions: null, scope: 'case', participantRoleKey: null, stagePosition: null, config: undefined },
+      { key: 'official-id', type: 'document', label: 'INE', instructions: null, scope: 'participant', participantRoleKey: 'buyer', stagePosition: 0, config: undefined },
     ],
   };
 }

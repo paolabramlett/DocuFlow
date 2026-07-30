@@ -99,6 +99,7 @@ export function BlueprintsDirectory({
 
   async function confirmDelete() {
     if (!pendingDelete) return;
+    setError(null);
     setDeleting(true);
     const result = await deleteBlueprintAction(pendingDelete.id);
     setDeleting(false);

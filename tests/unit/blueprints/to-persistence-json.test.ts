@@ -10,7 +10,7 @@ describe('toPersistenceJson', () => {
       stages: [{ id: '', name: 'Firma', position: 0 }],
       participantTemplates: [{ id: '', roleKey: 'buyer', displayName: 'Comprador', position: 0 }],
       requirements: [
-        { key: 'official-id', type: 'document', label: 'INE', instructions: null, scope: 'participant', participantRoleKey: 'buyer', stagePosition: 0 },
+        { key: 'official-id', type: 'document', label: 'INE', instructions: null, scope: 'participant', participantRoleKey: 'buyer', stagePosition: 0, config: undefined },
       ],
     };
 
@@ -18,7 +18,7 @@ describe('toPersistenceJson', () => {
       stages: [{ name: 'Firma', position: 0 }],
       participantTemplates: [{ role_key: 'buyer', display_name: 'Comprador', position: 0 }],
       requirements: [
-        { key: 'official-id', type: 'document', label: 'INE', instructions: null, scope: 'participant', participant_role_key: 'buyer', stage_position: 0 },
+        { key: 'official-id', type: 'document', label: 'INE', instructions: null, scope: 'participant', participant_role_key: 'buyer', stage_position: 0, config: undefined },
       ],
     });
   });

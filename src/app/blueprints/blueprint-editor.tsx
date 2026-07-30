@@ -48,6 +48,7 @@ export interface DraftRequirement {
   label: string;
   instructions?: string;
   scope: "case" | "participant";
+  config?: unknown;
 }
 export interface EditorDraft {
   name: string;
@@ -99,6 +100,7 @@ export function serializeDraftToNormalizedBlueprint(draft: EditorDraft): Normali
         ? roleKeyByDraftId.get(r.participantRoleDraftId) ?? null
         : null,
       stagePosition: r.stageDraftId !== null ? stagePositionByDraftId.get(r.stageDraftId) ?? null : null,
+      config: r.config,
     })),
   };
 }
@@ -127,6 +129,7 @@ function toSaveBlueprintPayload(
             label: r.label,
             instructions: r.instructions ?? undefined,
             stagePosition: r.stagePosition ?? undefined,
+            config: r.config,
           }
         : {
             scope: "participant" as const,
@@ -136,6 +139,7 @@ function toSaveBlueprintPayload(
             instructions: r.instructions ?? undefined,
             stagePosition: r.stagePosition ?? undefined,
             participantRoleKey: r.participantRoleKey!,
+            config: r.config,
           },
     ),
   };
@@ -171,6 +175,7 @@ function draftFromBlueprint(bp: BlueprintDefinition | null): EditorDraft {
     label: r.label,
     instructions: r.instructions ?? undefined,
     scope: r.scope,
+    config: r.config,
   }));
 
   return { name: bp.name, description: bp.description ?? "", stages, participantTemplates, requirements };
@@ -345,6 +350,8 @@ export function BlueprintEditor({
   }
 
   function goNext() {
+    setStepError(null);
+    setSaveError(null);
     if (step === 0 && !canAdvanceStep0) return;
     if (step === 1 && !canAdvanceStep1) return;
     if (step === 2 && !canAdvanceStep2) return;
@@ -354,6 +361,8 @@ export function BlueprintEditor({
     setStep((s) => Math.min(4, s + 1));
   }
   function goBack() {
+    setStepError(null);
+    setSaveError(null);
     setStep((s) => Math.max(0, s - 1) as typeof s);
   }
 

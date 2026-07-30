@@ -25,6 +25,33 @@ describe('saveBlueprint', () => {
     expect(row?.name).toBe('Compraventa');
   });
 
+  it('round-trips an opaque config value on a requirement through save and re-read', async () => {
+    const { organizationId, owner } = await createOrganizationWithOwner('Notaría Config Roundtrip', 'notary');
+
+    const created = await saveBlueprint(
+      owner.client,
+      {
+        organizationId,
+        name: 'Config test',
+        stages: [],
+        participantTemplates: [],
+        requirements: [
+          { scope: 'case', key: 'doc-a', type: 'document', label: 'Doc A', config: { maxSizeMb: 10 } },
+        ],
+      },
+      owner.userId,
+    );
+
+    const { data: row } = await owner.client
+      .from('blueprints')
+      .select('requirement_definitions')
+      .eq('id', created.blueprintId)
+      .single();
+
+    const definitions = row?.requirement_definitions as { key: string; config?: unknown }[];
+    expect(definitions[0]?.config).toEqual({ maxSizeMb: 10 });
+  });
+
   it('fully replaces children on edit — an old stage absent from the new payload is gone', async () => {
     const { organizationId, owner } = await createOrganizationWithOwner('Notaría Save Edit', 'notary');
 

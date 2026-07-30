@@ -106,6 +106,7 @@ export interface BlueprintRequirementDefinition {
   readonly scope: BlueprintRequirementScope;
   readonly participantRoleKey: string | null;
   readonly stagePosition: number | null;
+  readonly config: unknown;
 }
 
 export interface BlueprintDefinition {
@@ -132,6 +133,7 @@ export interface NormalizedBlueprint {
     scope: BlueprintRequirementScope;
     participantRoleKey: string | null;
     stagePosition: number | null;
+    config: unknown;
   }[];
 }
 
@@ -203,6 +205,7 @@ export function normalizeBlueprintFromDb(row: RawBlueprintDefinitionRow): Normal
         scope: (def.scope ?? 'case') as BlueprintRequirementScope,
         participantRoleKey: typeof def.participant_role_key === 'string' ? def.participant_role_key : null,
         stagePosition: typeof def.stage_position === 'number' ? def.stage_position : null,
+        config: def.config,
       };
     }),
   };
@@ -214,8 +217,8 @@ export interface SaveBlueprintDraftInput {
   stages: { name: string; position: number }[];
   participantTemplates: { roleKey: string; displayName: string; position: number }[];
   requirements: (
-    | { scope: 'case'; key: string; type: string; label: string; instructions?: string; stagePosition?: number }
-    | { scope: 'participant'; key: string; type: string; label: string; instructions?: string; stagePosition?: number; participantRoleKey: string }
+    | { scope: 'case'; key: string; type: string; label: string; instructions?: string; stagePosition?: number; config?: unknown }
+    | { scope: 'participant'; key: string; type: string; label: string; instructions?: string; stagePosition?: number; participantRoleKey: string; config?: unknown }
   )[];
 }
 
@@ -240,6 +243,7 @@ export function normalizeBlueprintDraft(input: SaveBlueprintDraftInput): Normali
       scope: r.scope,
       participantRoleKey: r.scope === 'participant' ? r.participantRoleKey : null,
       stagePosition: r.stagePosition ?? null,
+      config: r.config,
     })),
   };
 }
@@ -318,6 +322,7 @@ export function validateBlueprintStructure(input: NormalizedBlueprint): Validate
       scope: r.scope,
       participantRoleKey: r.participantRoleKey,
       stagePosition: r.stagePosition,
+      config: r.config,
     });
   }
 

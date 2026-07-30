@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { SupabaseClient } from "@supabase/supabase-js";
-import type { Database } from "@/types/database";
+import type { Database, Json } from "@/types/database";
 import { ValidationError, parseInput } from "@/lib/validation/parse";
 import { UseCaseError } from "./errors";
 import { logDomainEvent } from "./events";
@@ -30,6 +30,7 @@ export function toPersistenceJson(validated: ValidatedBlueprintStructure): {
     scope: "case" | "participant";
     participant_role_key: string | null;
     stage_position: number | null;
+    config: Json | undefined;
   }[];
 } {
   return {
@@ -47,6 +48,7 @@ export function toPersistenceJson(validated: ValidatedBlueprintStructure): {
       scope: r.scope,
       participant_role_key: r.participantRoleKey,
       stage_position: r.stagePosition,
+      config: r.config as Json | undefined,
     })),
   };
 }
@@ -75,6 +77,7 @@ const requirementSchema = z.discriminatedUnion("scope", [
     label: z.string().trim().min(1).max(300),
     instructions: z.string().trim().max(2000).optional(),
     stagePosition: z.number().int().min(0).optional(),
+    config: z.unknown().optional(),
   }).strict(),
   z.object({
     scope: z.literal("participant"),
@@ -84,6 +87,7 @@ const requirementSchema = z.discriminatedUnion("scope", [
     instructions: z.string().trim().max(2000).optional(),
     stagePosition: z.number().int().min(0).optional(),
     participantRoleKey: roleKeySchema,
+    config: z.unknown().optional(),
   }).strict(),
 ]);
 
