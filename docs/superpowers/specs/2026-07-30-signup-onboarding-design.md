@@ -414,7 +414,6 @@ if (result.ok) {
   setError(result.message);
 }
 ```
-```
 No state is tracked client- or server-side about "password already set" across retries — resending
 the same password on a retry is harmless, and tracking that state deliberately isn't worth it for
 this MVP.
