@@ -45,7 +45,7 @@ an invite before or after completing onboarding) must account for this state exi
     → confirmation.html email → /auth/confirm (new "signup" OTP type) → session established
       → /onboarding (guarded: authenticated + no organization)
         → completeOnboardingAction: real password (+ confirmation) → complete_onboarding RPC
-          → redirect to /cases
+          → returns ActionResult; the client redirects on success (see section 3)
 ```
 
 Three new pages/actions, two new RPCs, one new table, one existing-function fix, and one
@@ -61,6 +61,12 @@ existing-function safety upgrade (`requireStaff`). Nothing about `create_organiz
 -- no per-IP limiting, no CAPTCHA, no pattern detection. Sufficient for MVP; expand if real abuse
 -- appears. RLS enabled with zero policies: reachable only via the admin (service_role) client
 -- inside signUpAction/claim_signup_attempt, never directly by anon/authenticated.
+--
+-- Retention: this is temporary operational state, not a historical record of signup attempts —
+-- rows older than 7 days carry no ongoing purpose and should be purged periodically (a scheduled
+-- job/cron script, out of scope for this spec to build, but the intent is documented here so it
+-- doesn't quietly become an indefinite log of every email address that ever tried to sign up):
+--   delete from public.signup_attempts where last_attempted_at < now() - interval '7 days';
 create table public.signup_attempts (
   email text primary key,
   last_attempted_at timestamptz not null default now()
@@ -83,6 +89,15 @@ as $$
 declare
   claimed boolean;
 begin
+  -- Defensive validation: security definer, so it must not trust its own caller's parameters
+  -- blindly even though only service_role can invoke it today.
+  if nullif(btrim(signup_email), '') is null or length(signup_email) > 320 then
+    raise exception 'invalid signup email' using errcode = '22023';
+  end if;
+  if cooldown_seconds < 1 or cooldown_seconds > 86400 then
+    raise exception 'invalid cooldown' using errcode = '22023';
+  end if;
+
   insert into public.signup_attempts (email, last_attempted_at)
   values (signup_email, now())
   on conflict (email) do update
@@ -172,6 +187,12 @@ grant execute on function public.complete_onboarding(text, text) to authenticate
 same neutral message regardless of outcome: *"Si el correo es válido, te enviamos un enlace para
 continuar."* Link to `/login` for existing users.
 
+No conflict between client-side validation and the neutral response: a malformed email can be
+flagged inline before submit (immediate, helpful feedback); once a syntactically valid email is
+actually submitted, the response is always neutral regardless of what happens server-side; and the
+server itself stays neutral even against a direct call bypassing the UI entirely (`signUpAction`'s
+own `emailSchema.safeParse` failing still returns `ok(null)`, never a distinct error).
+
 **`src/app/signup/actions.ts`:**
 ```ts
 "use server";
@@ -203,6 +224,9 @@ export async function signUpAction(email: string): Promise<ActionResult<null>> {
   });
   if (cooldownError || !claimed) return ok(null); // neutral even when cooldown-limited
 
+  // The cooldown is consumed BEFORE calling auth.signUp(), intentionally. If GoTrue then fails
+  // transiently, the caller waits out the same cooldown before their next attempt — preferable to
+  // releasing the claim and letting repeated failures become a spam vector of their own.
   const supabase = await createClient();
   const { error } = await supabase.auth.signUp({
     email: normalizedEmail,
@@ -237,6 +261,10 @@ enable_confirmations = true   # was false; nothing else in this codebase calls a
 subject = "Confirma tu cuenta — Avanza"
 content_path = "./supabase/templates/confirmation.html"
 ```
+`enable_confirmations` is a global Auth setting, not scoped to this feature — the invite flow
+(`inviteUserByEmail`) itself needs no code change, but this spec's testing section (§5) includes
+an explicit regression check that inviting an existing user still works exactly as before under
+the new setting, rather than assuming it from reading the code alone.
 
 **`src/app/auth/confirm/route.ts`:**
 ```ts
@@ -257,6 +285,7 @@ const { data: membership, error } = await supabase
   .from("members")
   .select("role, organization:organizations(id, name, industry)")
   .eq("user_id", user.id)
+  .order("created_at", { ascending: true })
   .limit(1)
   .maybeSingle();
 
@@ -264,6 +293,12 @@ if (error) throw new Error(`getStaffContext: ${error.message}`);
 if (!membership?.organization) return null;
 // ... rest unchanged
 ```
+The added `.order("created_at", { ascending: true })` is a minor, pre-existing-limitation note,
+not something this spec resolves: since one identity can hold multiple memberships, a query with
+no notion of "active organization" will eventually need to pick one somehow. Ordering by oldest
+membership makes that pick stable rather than arbitrary — it does not solve the future "which
+organization is this identity currently acting as" problem (an active-organization selector is
+out of scope here), it just stops today's behavior from depending on undefined row order.
 
 **`requireStaff()` distinguishes "not authenticated" from "authenticated, no organization":**
 ```ts
@@ -350,7 +385,11 @@ export async function completeOnboardingAction(input: {
     organization_name: parsed.organizationName.trim(),
     organization_industry: parsed.organizationIndustry.trim(),
   });
-  if (orgError) {
+  // No non-null assertion: "no error but no UUID either" must never be read as success, even
+  // though the SQL function's own `returns uuid` makes it look like that combination can't
+  // happen — the generated client type is nullable, and this is exactly the kind of anomaly
+  // worth surfacing rather than silently trusting.
+  if (orgError || !organizationId) {
     return {
       ok: false,
       reason: "unexpected",
@@ -358,8 +397,23 @@ export async function completeOnboardingAction(input: {
     };
   }
 
-  return ok({ organizationId: organizationId! });
+  return ok({ organizationId });
 }
+```
+
+**Redirect ownership is explicit and belongs to the client, not the action**: `completeOnboardingAction`
+always returns a plain `ActionResult`, never calls `redirect()` itself — mixing `redirect()` (which
+throws internally) with a discriminated `ActionResult` return would make partial-failure messages
+unreachable. The client component does the navigation:
+```ts
+const result = await completeOnboardingAction(input);
+if (result.ok) {
+  router.replace("/cases");
+  router.refresh();
+} else {
+  setError(result.message);
+}
+```
 ```
 No state is tracked client- or server-side about "password already set" across retries — resending
 the same password on a retry is harmless, and tracking that state deliberately isn't worth it for
@@ -385,7 +439,8 @@ this MVP.
 - `claim_signup_attempt`: first claim for a fresh email succeeds (`true`); a second claim within
   the cooldown window fails (`false`); after the cooldown elapses, a claim succeeds again.
   **Concurrency**: two simultaneous claims for the same email (`Promise.all`) — exactly one
-  returns `true`, the other `false`. This is the real proof the TOCTOU race is closed.
+  returns `true`, the other `false`. This is the real proof the TOCTOU race is closed. A cooldown
+  of `0`, a negative value, or `86401` → rejected with `errcode = '22023'`.
 - `complete_onboarding`: first call creates organization + owner membership; a second call (same
   user) returns the same organization, no duplicate created; **concurrency**: two simultaneous
   calls for the same user (`Promise.all`) — exactly one organization exists afterward (the
@@ -401,7 +456,16 @@ this MVP.
 - `completeOnboardingAction` partial-failure paths: `updateUser` fails → `complete_onboarding` is
   never called, password-specific message returned; `updateUser` succeeds but `complete_onboarding`
   fails → the "tu contraseña se guardó..." message returned, and the user is confirmed to still
-  have zero memberships (can retry); both succeed → returns `organizationId`.
+  have zero memberships (can retry); both succeed → returns `organizationId`, never via a non-null
+  assertion (see §3) — a stubbed "no error, no id" response from the RPC layer must return
+  `unexpected`, never `ok`.
+- `signUpAction`: a successful claim followed by a simulated `auth.signUp()` failure → the
+  cooldown remains claimed (the next attempt within the window is still blocked, matching the
+  intentional "consume cooldown before calling GoTrue" ordering documented in §2).
+- **Invite-flow regression**: after `enable_confirmations = true`, `inviteUserByEmail` still sends
+  `invite.html`, `/auth/confirm?type=invite` still establishes a session and proceeds to
+  `/set-password` exactly as before — proving the global Auth setting change doesn't alter the
+  existing invite path's behavior.
 
 **Isolation/RLS:**
 - `signup_attempts` is unreachable via the anon or authenticated roles — readable/writable only
@@ -422,8 +486,16 @@ Blueprint authoring feature):
   end for a real user, not just in the RPC's own test.
 - Open two `/onboarding` tabs for the same session and submit both nearly simultaneously; confirm
   both end up pointed at the same organization.
-- Reuse an already-consumed confirmation link; confirm it fails safely (redirects to `/set-password`
-  per `/auth/confirm`'s existing failure path, session cleared).
+- Reuse an already-consumed confirmation link; confirm it fails safely. Note: `/auth/confirm`'s
+  existing failure path redirects to `/set-password` regardless of which flow failed (invite,
+  recovery, or now signup) — landing an aborted signup attempt on a page literally named
+  "set password" is semantically odd, but this is pre-existing, shared behavior this spec does not
+  change. The check here is narrower and already covers the real risk: confirm `/set-password`
+  does not loop and does not let the visitor proceed without a real session (it already infers
+  validity from "someone is authenticated," and the route's cleanup step clears any stale session
+  on failure — verify that still holds). Whether a failed signup confirmation should land
+  somewhere more specific (`/login` or a dedicated "invalid link" screen) is a real follow-up, out
+  of scope here as long as today's fallback stays safe.
 - Attempt to tamper with `next` on `/auth/confirm`'s URL; confirm it never redirects off-site
   (`isSafeNextPath`'s existing allowlist already covers this — this is a regression check, not new
   code).
