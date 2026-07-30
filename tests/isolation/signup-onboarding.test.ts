@@ -170,16 +170,12 @@ describe('complete_onboarding', () => {
     expect(error?.message).toBe('invalid organization industry');
   });
 
-  it('rolls back the organization insert if the membership insert fails', async () => {
+  it('creates no organization when the call is rejected by pre-insert validation', async () => {
     const user = await createTestUser('onboard-rollback');
-    // Force the members insert to fail by pre-creating a conflicting membership row directly —
-    // membership.unique(organization_id, user_id) can't fire here since the org is new each call,
-    // so instead we simulate the failure mode by revoking the function's own INSERT privilege on
-    // members for the duration of this one call via a nested, expected-to-fail transaction. This
-    // is easiest expressed by temporarily breaking the FK: insert a membership row for a
-    // non-existent organization_id is impossible to arrange without a second privileged path, so
-    // instead assert the property directly: after any of the failure-path tests above (invalid
-    // name/industry), no organization was created at all.
+    // This proves rejected input creates nothing — it does NOT prove a genuine interior
+    // (organization inserted, then membership insert fails) rollback, since the function's
+    // defensive validation runs before any insert and there's no safe way to force a failure
+    // between the two inserts without a second privileged bypass path this codebase doesn't have.
     const before = await adminClient().from('organizations').select('*', { count: 'exact', head: true });
     await user.client.rpc('complete_onboarding', { organization_name: '   ', organization_industry: 'notary' });
     const after = await adminClient().from('organizations').select('*', { count: 'exact', head: true });
