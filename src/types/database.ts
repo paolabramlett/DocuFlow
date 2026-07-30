@@ -864,6 +864,21 @@ export type Database = {
           },
         ]
       }
+      signup_attempts: {
+        Row: {
+          email: string
+          last_attempted_at: string
+        }
+        Insert: {
+          email: string
+          last_attempted_at?: string
+        }
+        Update: {
+          email?: string
+          last_attempted_at?: string
+        }
+        Relationships: []
+      }
       staff_notifications: {
         Row: {
           acknowledged_at: string | null
@@ -993,6 +1008,14 @@ export type Database = {
       }
     }
     Functions: {
+      claim_signup_attempt: {
+        Args: { cooldown_seconds: number; signup_email: string }
+        Returns: boolean
+      }
+      complete_onboarding: {
+        Args: { organization_industry: string; organization_name: string }
+        Returns: string
+      }
       create_case: {
         Args: {
           case_title: string
