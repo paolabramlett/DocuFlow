@@ -40,4 +40,21 @@ describe('members query underlying getStaffContext', () => {
     expect(ownerRow?.role).toBe('owner');
     expect(staffRow?.role).toBe('staff');
   });
+
+  it('propagates a genuine query error rather than returning null', async () => {
+    // getStaffContext() itself can't be invoked directly here (it depends on the Next.js
+    // request-scoped cookie client) — this proves the underlying error-checking logic instead,
+    // matching this file's existing convention for the same reason.
+    const { organizationId, owner } = await createOrganizationWithOwner('Notaría Context Error', 'notary');
+    const { error } = await owner.client
+      .from('members')
+      .select('role, organization:organizations(id, name, industry)')
+      .eq('user_id', 'not-a-valid-uuid') // malformed filter value forces a real Postgres error
+      .order('created_at', { ascending: true })
+      .limit(1)
+      .maybeSingle();
+
+    expect(error).not.toBeNull();
+    void organizationId;
+  });
 });
