@@ -188,7 +188,7 @@ export async function inviteMember(
     try {
       await sendEmail({
         to: normalizedEmail,
-        subject: `Te agregaron al equipo de ${organization.name} en DocuFlow`,
+        subject: `Te agregaron al equipo de ${organization.name} en Avanza`,
         html: `<p>Ya tienes acceso. Entra en <a href="${APP_ORIGIN}/login">${APP_ORIGIN}/login</a> con tu correo.</p><p>Si todavía no tienes contraseña, usa "¿Olvidaste tu contraseña?" para crear una.</p>`,
         idempotencyKey: `member-added/${organizationId}/${insertedMember.id}`,
       });

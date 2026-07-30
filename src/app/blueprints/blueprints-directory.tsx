@@ -1,7 +1,7 @@
 "use client";
 
 /*
- * DocuFlow — Blueprint Library. Real data. Cards show the four broken-out counts; owners also get
+ * Avanza — Blueprint Library. Real data. Cards show the four broken-out counts; owners also get
  * Editar/Duplicar/Eliminar per card and a Nueva plantilla button.
  */
 
@@ -32,7 +32,7 @@ function BlueprintCard({
             <div className="text-base font-semibold text-text-primary">{b.name}</div>
             {b.isPlatformTemplate && (
               <span className="mt-0.5 inline-block rounded-full bg-app-bg px-2 py-0.5 text-xs font-medium text-text-secondary">
-                Plantilla de DocuFlow
+                Plantilla de Avanza
               </span>
             )}
           </div>

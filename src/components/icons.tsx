@@ -1,4 +1,4 @@
-/* Shared line-icon set for the DocuFlow interface. */
+/* Shared line-icon set for the Avanza interface. */
 export type IconProps = { className?: string };
 
 const s = {

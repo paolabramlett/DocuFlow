@@ -20,7 +20,7 @@ The job being done: complete a client case without chasing the client through Wh
 
 ## Product Purpose
 
-DocuFlow is a **workflow engine** that helps businesses complete client cases by collecting the information and documents those cases require. It exists to eliminate the administrative labor of repeated client follow-up.
+Avanza is a **workflow engine** that helps businesses complete client cases by collecting the information and documents those cases require. It exists to eliminate the administrative labor of repeated client follow-up.
 
 Explicitly **not**: a document management system, a Google Drive, or a CRM.
 
@@ -30,7 +30,7 @@ Mission: reduce the manual administrative follow-up required to complete a clien
 
 ## Positioning
 
-DocuFlow is a **Case Engine**. The Case is the central object of the platform; documents are one *type of requirement* inside a Case, never the center of the system.
+Avanza is a **Case Engine**. The Case is the central object of the platform; documents are one *type of requirement* inside a Case, never the center of the system.
 
 Two commitments a neighboring product could not truthfully copy while remaining what it is:
 
@@ -39,7 +39,7 @@ Two commitments a neighboring product could not truthfully copy while remaining 
 
 ## Operating Context
 
-**Multi-industry under one domain.** One product, one domain (e.g. `docuflow.com`). Each organization selects its industry during onboarding (notary, accounting, legal, insurance, HR, …). That selection determines only:
+**Multi-industry under one domain.** One product, one domain (e.g. `avanza.work`). Each organization selects its industry during onboarding (notary, accounting, legal, insurance, HR, …). That selection determines only:
 
 - default terminology
 - starter Blueprints
@@ -141,7 +141,7 @@ Organization · Member · Client · Blueprint · Case · Requirement · Document
 
 ## Brand Commitments
 
-Working name: **DocuFlow**.
+Working name: **Avanza**.
 
 The owner is a UX/UI designer and will design every screen in Figma; designs arrive later, and implementation is expected to be production-ready from them.
 
@@ -164,4 +164,4 @@ There are no customers, no testimonials, no case studies, no usage data, no benc
 
 ## Accessibility & Inclusion
 
-**Undecided.** No accessibility standard or specific user need has been established for DocuFlow yet. This is an open decision, not an absence of requirement — it should be settled before UI implementation begins, since Client-role users are external parties on unknown devices and assistive technology.
+**Undecided.** No accessibility standard or specific user need has been established for Avanza yet. This is an open decision, not an absence of requirement — it should be settled before UI implementation begins, since Client-role users are external parties on unknown devices and assistive technology.

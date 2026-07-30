@@ -97,10 +97,8 @@ export default function SetPasswordPage() {
     <div className="flex min-h-screen items-center justify-center bg-app-bg px-5 py-10">
       <div className="w-full max-w-sm">
         <div className="mb-6 flex justify-center">
-          <div className="flex items-center gap-2.5">
-            <div className="flex size-8 items-center justify-center rounded-input bg-royal-600 text-sm font-bold text-white">D</div>
-            <span className="text-[15px] font-semibold tracking-tight text-text-primary">DocuFlow</span>
-          </div>
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src="/img/Logo-1.png" alt="Avanza" className="h-6 w-auto" />
         </div>
 
         <div className="rounded-panel border border-border bg-surface p-7 shadow-md">

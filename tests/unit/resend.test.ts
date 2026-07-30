@@ -23,7 +23,7 @@ describe('sendTransactionalEmail', () => {
     expect(url).toBe('https://api.resend.com/emails');
     expect(init?.method).toBe('POST');
     const headers = init?.headers as Record<string, string>;
-    expect(headers['User-Agent']).toBe('docuflow/1.0');
+    expect(headers['User-Agent']).toBe('avanza/1.0');
     expect(headers['Idempotency-Key']).toBe('test-key-123');
     expect(headers['Content-Type']).toBe('application/json');
     expect(headers.Authorization).toMatch(/^Bearer /);

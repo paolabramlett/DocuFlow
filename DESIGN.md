@@ -4,7 +4,7 @@
 
 ## Direction contract (owner-pinned)
 
-**THESIS.** DocuFlow is a modern, premium operational **workspace** — not a digital government form or a literal official document. It sits between a modern project-management platform and a premium financial-operations dashboard, while staying simpler and less data-dense than either. Calm authority, trust, precision, and excellent information hierarchy — expressed through contemporary SaaS patterns.
+**THESIS.** Avanza is a modern, premium operational **workspace** — not a digital government form or a literal official document. It sits between a modern project-management platform and a premium financial-operations dashboard, while staying simpler and less data-dense than either. Calm authority, trust, precision, and excellent information hierarchy — expressed through contemporary SaaS patterns.
 
 **OWN-WORLD.** A very light cool-blue app canvas (`#F5F7FF`) with crisp white surfaces raised by subtle, cool-toned shadows. **Royal blue** is the brand — it owns navigation and every action; green/amber/red stay strictly semantic. Modular cards and panels, soft contemporary radii, generous-but-efficient spacing. Geist Sans for the interface, Geist Mono for identifiers.
 

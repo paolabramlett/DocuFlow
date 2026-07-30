@@ -20,13 +20,13 @@ export async function sendTransactionalEmail(input: SendTransactionalEmailInput)
       Authorization: `Bearer ${RESEND_API_KEY}`,
       'Content-Type': 'application/json',
       // Resend's HTTP API rejects requests with no User-Agent (403, error 1010) — its own SDK
-      // sets this automatically; a manual fetch has to do it explicitly. Rename to avanza/1.0
-      // whenever the product rebrand lands; this string is never user-visible.
-      'User-Agent': 'docuflow/1.0',
+      // sets this automatically; a manual fetch has to do it explicitly. This string is never
+      // user-visible.
+      'User-Agent': 'avanza/1.0',
       ...(input.idempotencyKey ? { 'Idempotency-Key': input.idempotencyKey } : {}),
     },
     body: JSON.stringify({
-      from: 'DocuFlow <noreply@avanza.work>',
+      from: 'Avanza <noreply@avanza.work>',
       to: input.to,
       subject: input.subject,
       html: input.html,

@@ -53,10 +53,8 @@ const META: Record<
 function Brand() {
   return (
     <div className="mb-6 flex justify-center">
-      <div className="flex items-center gap-2.5">
-        <div className="flex size-8 items-center justify-center rounded-input bg-royal-600 text-sm font-bold text-white">D</div>
-        <span className="text-[15px] font-semibold tracking-tight text-text-primary">DocuFlow</span>
-      </div>
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img src="/img/Logo-1.png" alt="Avanza" className="h-6 w-auto" />
     </div>
   );
 }
@@ -325,8 +323,8 @@ function Checklist({ token, state, onChanged }: { token: string; state: PortalSt
       <header className="border-b border-border bg-surface">
         <div className="mx-auto flex h-16 max-w-2xl items-center justify-between px-5">
           <div className="flex items-center gap-2.5">
-            <div className="flex size-8 items-center justify-center rounded-input bg-royal-600 text-sm font-bold text-white">D</div>
-            <span className="text-[15px] font-semibold tracking-tight text-text-primary">DocuFlow</span>
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src="/img/Logo-1.png" alt="Avanza" className="h-6 w-auto" />
           </div>
           <div className="flex items-center gap-1.5 text-xs font-medium text-text-secondary">
             <IconShield className="size-4 text-success" /> Sesión segura
@@ -367,7 +365,7 @@ function Checklist({ token, state, onChanged }: { token: string; state: PortalSt
           </>
         )}
 
-        <p className="mt-8 text-center font-mono text-xs text-text-secondary/60">DocuFlow</p>
+        <p className="mt-8 text-center font-mono text-xs text-text-secondary/60">Avanza</p>
       </main>
     </div>
   );

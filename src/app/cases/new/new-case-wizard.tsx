@@ -1,7 +1,7 @@
 "use client";
 
 /*
- * DocuFlow — New Case flow.
+ * Avanza — New Case flow.
  *
  * The Staff spine: start from a Blueprint, add Participants, assign each their Requirements, and
  * send invitations. A focused flow inside the workspace shell.

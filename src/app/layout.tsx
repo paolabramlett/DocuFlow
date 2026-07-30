@@ -17,7 +17,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "DocuFlow",
+  title: "Avanza",
   description: "Completa expedientes de clientes sin perseguirlos.",
 };
 

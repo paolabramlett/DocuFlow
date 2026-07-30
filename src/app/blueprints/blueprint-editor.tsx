@@ -1,7 +1,7 @@
 "use client";
 
 /*
- * DocuFlow — Blueprint authoring. One component, three modes (create/edit/duplicate) — see
+ * Avanza — Blueprint authoring. One component, three modes (create/edit/duplicate) — see
  * docs/superpowers/specs/2026-07-29-blueprint-authoring-design.md, section 5.
  */
 
