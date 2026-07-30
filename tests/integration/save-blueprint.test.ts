@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { addStaffMember, createOrganizationWithOwner } from '../helpers/clients';
 import { saveBlueprint } from '@/application/save-blueprint';
 import { deleteBlueprint } from '@/application/delete-blueprint';
@@ -86,6 +86,63 @@ describe('saveBlueprint', () => {
     await expect(
       saveBlueprint(staff.client, { organizationId, name: 'X', stages: [], participantTemplates: [], requirements: [] }, staff.userId),
     ).rejects.toMatchObject({ reason: 'forbidden' });
+  });
+
+  it('maps every closed RPC validation code to the correct UseCaseError message', async () => {
+    const { organizationId, owner } = await createOrganizationWithOwner('Notaría Save All Codes', 'notary');
+
+    // Every one of these five payloads would actually be caught by saveBlueprint's own local
+    // validateBlueprintStructure() pass *before* client.rpc is ever called (it runs the identical
+    // structural checks as a client-side mirror of the RPC's checks, and for one of these codes —
+    // unknown_participant_role_key vs. the local orphaned_role_key — the message text genuinely
+    // differs between the two layers). So a plain call through the public saveBlueprint contract
+    // can never actually exercise the RPC's own code-to-message mapping for these five closed
+    // codes; the local layer always wins the race. To deterministically test the RPC_VALIDATION_
+    // MESSAGES mapping table itself (the thing this test is actually named for), we use a valid
+    // payload (passes local validation) and spy on client.rpc to simulate the RPC surfacing each
+    // closed code — the same technique the "unrecognized RPC error" test below already uses and
+    // justifies.
+    const codes: { code: string; expectedMessage: string }[] = [
+      { code: 'duplicate_participant_role_key', expectedMessage: 'Cada rol de participante debe tener un identificador único.' },
+      { code: 'duplicate_participant_position', expectedMessage: 'No puede haber dos roles de participante con la misma posición.' },
+      { code: 'unknown_participant_role_key', expectedMessage: 'Un requisito hace referencia a un rol de participante inexistente.' },
+      { code: 'unknown_stage_position', expectedMessage: 'Un requisito hace referencia a una etapa inexistente.' },
+      { code: 'duplicate_requirement_key', expectedMessage: 'Cada requisito debe tener una clave única dentro de su alcance.' },
+    ];
+
+    for (const c of codes) {
+      const rpcSpy = vi.spyOn(owner.client, 'rpc').mockReturnValueOnce(
+        Promise.resolve({ data: null, error: { message: c.code, code: 'P0001' } }) as never,
+      );
+      await expect(
+        saveBlueprint(
+          owner.client,
+          { organizationId, name: 'X', stages: [], participantTemplates: [], requirements: [] },
+          owner.userId,
+        ),
+        c.code,
+      ).rejects.toMatchObject({ reason: 'validation', message: c.expectedMessage });
+      rpcSpy.mockRestore();
+    }
+  });
+
+  it('rethrows an unrecognized RPC error as unexpected rather than downgrading to forbidden', async () => {
+    const { organizationId, owner } = await createOrganizationWithOwner('Notaría Save Unexpected', 'notary');
+
+    // Forcing a genuine unrecognized Postgres error would require bypassing the RPC's own
+    // preflight checks entirely — not reachable through the public save_blueprint contract. This
+    // spies on the one integration point (client.rpc) to simulate that scenario deterministically:
+    // an error whose message is not a key in RPC_VALIDATION_MESSAGES and not 'blueprint_not_found'
+    // or 'not_owner' must propagate as-is, not be silently reclassified as 'forbidden'.
+    const rpcSpy = vi.spyOn(owner.client, 'rpc').mockReturnValueOnce(
+      Promise.resolve({ data: null, error: { message: 'some_never_before_seen_code', code: 'P0001' } }) as never,
+    );
+
+    await expect(
+      saveBlueprint(owner.client, { organizationId, name: 'X', stages: [], participantTemplates: [], requirements: [] }, owner.userId),
+    ).rejects.not.toMatchObject({ reason: 'forbidden' });
+
+    rpcSpy.mockRestore();
   });
 });
 
