@@ -48,7 +48,14 @@ describe('schema guards', () => {
         )
     `);
 
-    expect(rows.map((r) => r.tablename)).toEqual([]);
+    // signup_attempts is the one deliberate exception: RLS is enabled with zero policies by
+    // design (supabase/migrations/20260730120000_signup_onboarding.sql) — its entire security
+    // model is that RLS blocks anon/authenticated completely, and only the service_role client
+    // (which bypasses RLS outright) ever touches it. There is no organization/tenant scoping to
+    // express as a policy in the first place. Any other table appearing here is still a real,
+    // unintentional gap this test exists to catch.
+    const unexpected = rows.map((r) => r.tablename).filter((name) => name !== 'signup_attempts');
+    expect(unexpected).toEqual([]);
   });
 
   it('keeps the app schema out of the API-exposed schemas', async () => {
