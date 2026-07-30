@@ -19,6 +19,8 @@ import {
 } from "@/components/icons";
 import { saveBlueprintAction, deleteBlueprintAction } from "./actions";
 import {
+  BLUEPRINT_INTEGRITY_MESSAGES,
+  BlueprintIntegrityError,
   validateBlueprintStructure,
   type BlueprintDefinition,
   type NormalizedBlueprint,
@@ -322,6 +324,10 @@ export function BlueprintEditor({
   }
 
   const canAdvanceStep0 = draft.name.trim().length > 0;
+  const canAdvanceStep1 = draft.stages.every((s) => s.name.trim().length > 0);
+  const canAdvanceStep2 = draft.participantTemplates.every(
+    (t) => t.displayName.trim().length > 0 && t.roleKey.trim().length > 0,
+  );
 
   function validateFullDraft(): boolean {
     try {
@@ -329,13 +335,19 @@ export function BlueprintEditor({
       setStepError(null);
       return true;
     } catch (e) {
-      setStepError(e instanceof Error ? e.message : "La plantilla tiene datos inválidos.");
+      if (e instanceof BlueprintIntegrityError) {
+        setStepError(BLUEPRINT_INTEGRITY_MESSAGES[e.code] ?? "La plantilla tiene datos inválidos.");
+      } else {
+        setStepError("La plantilla tiene datos inválidos.");
+      }
       return false;
     }
   }
 
   function goNext() {
     if (step === 0 && !canAdvanceStep0) return;
+    if (step === 1 && !canAdvanceStep1) return;
+    if (step === 2 && !canAdvanceStep2) return;
     // Full structural validation runs when leaving Requisitos (step 3) and entering Revisión —
     // not on every step, since an in-progress draft with no requirements yet is still valid.
     if (step === 3 && !validateFullDraft()) return;
@@ -362,7 +374,10 @@ export function BlueprintEditor({
     const result = await saveBlueprintAction(payload);
     setIsSaving(false);
     if (!result.ok) {
-      setSaveError(result.message);
+      const detail = result.issues?.length
+        ? ` (${result.issues.map((i) => i.message).join("; ")})`
+        : "";
+      setSaveError(result.message + detail);
       return;
     }
     setIsDirty(false);
@@ -578,7 +593,11 @@ export function BlueprintEditor({
             <button
               type="button"
               onClick={goNext}
-              disabled={step === 0 && !canAdvanceStep0}
+              disabled={
+                (step === 0 && !canAdvanceStep0) ||
+                (step === 1 && !canAdvanceStep1) ||
+                (step === 2 && !canAdvanceStep2)
+              }
               className="flex items-center gap-1.5 rounded-input bg-royal-600 px-3.5 py-2 text-sm font-semibold text-white disabled:opacity-60"
             >
               Siguiente <IconArrowRight className="size-4" />

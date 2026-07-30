@@ -144,6 +144,24 @@ export class BlueprintIntegrityError extends Error {
   }
 }
 
+/** Friendly Spanish translations for BlueprintIntegrityError codes. Shared by the application
+ *  layer (save-blueprint.ts) and the client-side editor (blueprint-editor.tsx), which calls
+ *  validateBlueprintStructure directly since it's a pure function safe to run in the browser. */
+export const BLUEPRINT_INTEGRITY_MESSAGES: Record<string, string> = {
+  invalid_role_key: 'El identificador del rol no es válido.',
+  duplicate_role_key: 'Cada rol de participante debe tener un identificador único.',
+  duplicate_participant_position: 'No puede haber dos roles de participante con la misma posición.',
+  duplicate_stage_position: 'No puede haber dos etapas con la misma posición.',
+  invalid_key: 'La clave del requisito no es válida.',
+  missing_label: 'Cada requisito necesita una etiqueta.',
+  invalid_scope: 'El alcance del requisito no es válido.',
+  missing_participant_role_key: 'Un requisito de participante necesita un rol asociado.',
+  orphaned_role_key: 'Un requisito hace referencia a un rol inexistente.',
+  unexpected_participant_role_key: 'Un requisito de expediente no debe tener un rol asociado.',
+  orphaned_stage_position: 'Un requisito hace referencia a una etapa inexistente.',
+  duplicate_key: 'Cada requisito debe tener una clave única dentro de su alcance.',
+};
+
 interface RawBlueprintDefinitionRow {
   id: string;
   name: string;

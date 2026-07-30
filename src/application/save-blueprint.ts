@@ -5,6 +5,7 @@ import { ValidationError, parseInput } from "@/lib/validation/parse";
 import { UseCaseError } from "./errors";
 import { logDomainEvent } from "./events";
 import {
+  BLUEPRINT_INTEGRITY_MESSAGES,
   BlueprintIntegrityError,
   normalizeBlueprintDraft,
   validateBlueprintStructure,
@@ -115,21 +116,6 @@ const RPC_VALIDATION_MESSAGES: Record<string, string> = {
   duplicate_requirement_key: "Cada requisito debe tener una clave única dentro de su alcance.",
 };
 
-const INTEGRITY_MESSAGES: Record<string, string> = {
-  invalid_role_key: "El identificador del rol no es válido.",
-  duplicate_role_key: "Cada rol de participante debe tener un identificador único.",
-  duplicate_participant_position: "No puede haber dos roles de participante con la misma posición.",
-  duplicate_stage_position: "No puede haber dos etapas con la misma posición.",
-  invalid_key: "La clave del requisito no es válida.",
-  missing_label: "Cada requisito necesita una etiqueta.",
-  invalid_scope: "El alcance del requisito no es válido.",
-  missing_participant_role_key: "Un requisito de participante necesita un rol asociado.",
-  orphaned_role_key: "Un requisito hace referencia a un rol inexistente.",
-  unexpected_participant_role_key: "Un requisito de expediente no debe tener un rol asociado.",
-  orphaned_stage_position: "Un requisito hace referencia a una etapa inexistente.",
-  duplicate_key: "Cada requisito debe tener una clave única dentro de su alcance.",
-};
-
 export async function saveBlueprint(
   client: DbClient,
   input: SaveBlueprintInput,
@@ -150,7 +136,7 @@ export async function saveBlueprint(
     validated = validateBlueprintStructure(normalizeBlueprintDraft(parsed));
   } catch (error) {
     if (error instanceof BlueprintIntegrityError) {
-      throw new UseCaseError("validation", INTEGRITY_MESSAGES[error.code] ?? "Los datos de la plantilla no son válidos.");
+      throw new UseCaseError("validation", BLUEPRINT_INTEGRITY_MESSAGES[error.code] ?? "Los datos de la plantilla no son válidos.");
     }
     throw error;
   }
