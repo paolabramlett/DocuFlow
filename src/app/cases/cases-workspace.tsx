@@ -187,7 +187,11 @@ function RequirementRow({ r }: { r: RequirementView }) {
     // Opened synchronously, before the await, so browser popup blockers see it as a direct
     // response to the click — setting .location once the signed URL is ready, rather than
     // calling window.open() only after the async round-trip, which most blockers reject.
-    const tab = window.open("", "_blank", "noopener,noreferrer");
+    // Deliberately no "noopener": that flag makes window.open() return null (per spec, since the
+    // whole point is severing the reference), which would leave this blank tab permanently
+    // un-navigable. The destination is our own freshly-minted signed URL, not third-party
+    // attacker content, so the usual reverse-tabnabbing reason for noopener doesn't apply here.
+    const tab = window.open("", "_blank");
     setBusy("view");
     setError(null);
     const result = await getDocumentDownloadUrlAction(r.documentId);
