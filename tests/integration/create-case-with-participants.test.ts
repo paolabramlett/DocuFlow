@@ -341,4 +341,58 @@ describe('createCaseWithParticipants orchestration', () => {
     expect(buyerReqs?.map((r) => r.label)).toEqual(['INE']);
     expect(witnessReqs?.map((r) => r.label)).toEqual(['Carta poder']);
   });
+
+  describe('invitation email', () => {
+    it('emails the participant a Portal link and marks them invited', async () => {
+      const { organizationId, owner } = await createOrganizationWithOwner('Notaría Invitation Email', 'notary');
+      const email = `client-${randomUUID()}@example.test`;
+      const sendEmail = vi.fn().mockResolvedValue(undefined);
+
+      const result = await createCaseWithParticipants(owner.client, {
+        organizationId, title: 'Invitation email test',
+        participants: [{ source: 'manual', roleLabel: 'Cliente', fullName: 'Cliente Uno', email, requirements: [] }],
+        sendInvitations: true,
+      }, owner.userId, sendEmail);
+
+      expect(result.invitationFailures).toEqual([]);
+      expect(result.participants[0]!.invited).toBe(true);
+
+      expect(sendEmail).toHaveBeenCalledTimes(1);
+      const sent = sendEmail.mock.calls[0]![0];
+      expect(sent.to).toBe(email);
+      expect(sent.subject).toContain('Notaría Invitation Email');
+      // The link is the one thing a participant with no invitation email has no other way to
+      // learn — this is the actual regression the whole test exists to catch.
+      expect(sent.html).toMatch(/\/portal\/[^"]+/);
+    });
+
+    it('does not email or count as invited when sendInvitations is false', async () => {
+      const { organizationId, owner } = await createOrganizationWithOwner('Notaría No Invitation', 'notary');
+      const sendEmail = vi.fn().mockResolvedValue(undefined);
+
+      const result = await createCaseWithParticipants(owner.client, {
+        organizationId, title: 'No invitation test',
+        participants: [{ source: 'manual', roleLabel: 'Cliente', fullName: 'Cliente Uno', email: `client-${randomUUID()}@example.test`, requirements: [] }],
+        sendInvitations: false,
+      }, owner.userId, sendEmail);
+
+      expect(sendEmail).not.toHaveBeenCalled();
+      expect(result.participants[0]!.invited).toBe(false);
+    });
+
+    it('reports an invitation failure, not a false "invited", when the email fails to send', async () => {
+      const { organizationId, owner } = await createOrganizationWithOwner('Notaría Failed Email', 'notary');
+      const email = `client-${randomUUID()}@example.test`;
+      const sendEmail = vi.fn().mockRejectedValue(new Error('Resend API error: 500 unknown_error'));
+
+      const result = await createCaseWithParticipants(owner.client, {
+        organizationId, title: 'Failed email test',
+        participants: [{ source: 'manual', roleLabel: 'Cliente', fullName: 'Cliente Uno', email, requirements: [] }],
+        sendInvitations: true,
+      }, owner.userId, sendEmail);
+
+      expect(result.participants[0]!.invited).toBe(false);
+      expect(result.invitationFailures).toEqual([{ email, reason: 'Resend API error: 500 unknown_error' }]);
+    });
+  });
 });

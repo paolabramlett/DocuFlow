@@ -713,7 +713,8 @@ function SentState({ result }: { result: CreatedCase }) {
           {invited.length > 0 ? (
             <>
               {invited.length} participante{invited.length > 1 ? "s" : ""} {invited.length > 1 ? "recibirán" : "recibirá"} un
-              código de un solo uso para subir sus documentos. El expediente avanza solo conforme cada uno se aprueba.
+              enlace por correo para acceder a su expediente y subir sus documentos. El expediente avanza solo conforme
+              cada uno se aprueba.
             </>
           ) : (
             <>El expediente se creó. Puedes enviar las invitaciones desde el expediente.</>

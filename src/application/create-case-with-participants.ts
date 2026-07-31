@@ -8,6 +8,8 @@ import { addRequirement, createCase } from "@/features/cases/cases";
 import { createParticipant, findOrCreateClient } from "@/features/participants/participants";
 import { issueInvitation } from "@/features/case-access/invitations";
 import { getBlueprintDefinition, type BlueprintDefinition } from "@/features/blueprints/queries";
+import { sendTransactionalEmail, type SendTransactionalEmailInput } from "@/lib/email/resend";
+import { APP_ORIGIN } from "@/lib/supabase/env";
 
 type DbClient = SupabaseClient<Database>;
 
@@ -77,7 +79,8 @@ export interface CreatedCase {
  *   5. Resolve their assigned Requirements — from the Blueprint's allowlist (client can narrow,
  *      never expand or invent) for a 'blueprint' participant, or freeform for a 'manual' one.
  *   6. Issue a Case Access grant + invitation token.
- *   7. Send the invitation (the OTP is dispatched when the client opens it).
+ *   7. Email the participant the Portal link (the OTP code itself is dispatched later, when the
+ *      client opens that link and asks for it — this step only gets them there).
  *   8. Return the new Case id so the caller can redirect to it.
  *
  * Runs entirely as the acting staff member, so RLS decides at every step whether the write is
@@ -96,6 +99,9 @@ export async function createCaseWithParticipants(
   client: DbClient,
   input: CreateCaseWithParticipantsInput,
   actorAuthUserId: string,
+  // Exists only for tests — production callers never pass it, matching inviteMember's own
+  // sendEmail parameter (src/application/invite-member.ts).
+  sendEmail: (input: SendTransactionalEmailInput) => Promise<void> = sendTransactionalEmail,
 ): Promise<CreatedCase> {
   let parsed;
   try {
@@ -176,6 +182,18 @@ export async function createCaseWithParticipants(
     );
   }
 
+  // Fetched once, outside the participant loop, purely for the invitation email's copy — never
+  // gates access (RLS already decided the Case could be created at all, above).
+  let organizationName = "Avanza";
+  if (sendInvitations) {
+    const { data: organization } = await client
+      .from("organizations")
+      .select("name")
+      .eq("id", organizationId)
+      .single();
+    if (organization) organizationName = organization.name;
+  }
+
   const created: CreatedCase["participants"] = [];
   const invitationFailures: CreatedCase["invitationFailures"] = [];
   let totalRequirementCount = 0;
@@ -222,11 +240,21 @@ export async function createCaseWithParticipants(
     let invited = false;
     if (sendInvitations) {
       try {
-        await issueInvitation(
+        const { token } = await issueInvitation(
           client,
           { organizationId, caseId, participantId, permission: "upload" },
           actorAuthUserId,
         );
+        // issueInvitation only creates the grant; nothing tells the participant it exists unless
+        // this email actually reaches them. A failure here must count as an invitation failure
+        // too (not a best-effort notification like inviteMember's "you were added" email) — an
+        // "invited" participant with no way to learn the Portal URL exists cannot access anything.
+        await sendEmail({
+          to: p.email,
+          subject: `Te invitaron a completar tu expediente — ${organizationName}`,
+          html: `<h2>Te invitaron a completar tu expediente</h2>\n<p>${organizationName} te invitó a completar información en Avanza. Usa el siguiente enlace para continuar:</p>\n<p><a href="${APP_ORIGIN}/portal/${token}">Ir a mi expediente</a></p>\n<p>No necesitas crear una cuenta — solo abre el enlace y sigue las instrucciones.</p>`,
+          idempotencyKey: `case-invitation/${caseId}/${participantId}`,
+        });
         invited = true;
       } catch (cause) {
         invitationFailures.push({
