@@ -56,6 +56,15 @@ export async function getStaffContext(): Promise<StaffContext | null> {
  * Pure redirect decision for requireStaff — separated from the actual redirect() call so the
  * full state matrix (no session / session-no-org / session-with-org) is unit-testable without a
  * Next.js request context.
+ *
+ * A real Supabase session with no `members` row is not only "staff mid-onboarding" — it is also
+ * the exact shape of a Portal Client session (src/features/case-access/invitations.ts's
+ * signInWithOtp/verifyOtp flow never inserts a `members` row). Routing that state to /onboarding
+ * rather than /login is a deliberate, user-approved decision, not an oversight: RLS isn't breached
+ * (a Client could already self-serve a new Organization via /signup with any email regardless),
+ * but the correct fix — a real classification of authenticated-identity kinds — is deliberately
+ * out of scope here and deferred to its own design. Do not "fix" this by special-casing Clients
+ * without that broader design; see docs/superpowers/specs/2026-07-30-signup-onboarding-design.md.
  */
 export function resolveStaffRedirect(
   context: StaffContext | null,

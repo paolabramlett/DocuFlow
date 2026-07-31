@@ -12,6 +12,7 @@ import {
   verifyInvitationOtp,
 } from '@/features/case-access/invitations';
 import { hashInvitationToken } from '@/features/case-access/tokens';
+import { findAuthUserByEmail } from '@/application/invite-member';
 
 interface Invitation {
   readonly world: OrganizationWorld;
@@ -226,6 +227,48 @@ describe('invitation and OTP flow', () => {
         .eq('action', 'grant.otp_verified');
       expect(events).toHaveLength(1);
       expect(JSON.stringify(events?.[0]?.metadata)).not.toContain(code);
+    });
+
+    it('still delivers a real passcode when the invited address already has an unconfirmed identity', async () => {
+      // Reproduces the exact gap the final whole-branch review caught: /signup can create an
+      // unconfirmed auth identity for any address before that same address is ever invited to a
+      // Case. sendInvitationOtp's admin.createUser(...) then fails with email_exists — if that
+      // were treated as "already fine" without checking confirmation, GoTrue would keep sending
+      // the link-only confirmation email forever, and this invited Client would never receive a
+      // code to enter.
+      const invitedEmail = `preexisting-unconfirmed-${randomUUID()}@example.test`;
+      const { error: createError } = await adminClient().auth.admin.createUser({
+        email: invitedEmail,
+        email_confirm: false,
+      });
+      expect(createError).toBeNull();
+
+      const world = await buildOrganizationWorld({
+        name: 'Notaría Invite Preexisting',
+        industry: 'notary',
+        clientEmail: invitedEmail,
+      });
+      const { token } = await issueInvitation(
+        world.staff.client,
+        {
+          organizationId: world.organizationId,
+          caseId: world.caseId,
+          participantId: world.participantId,
+          permission: 'upload',
+        },
+        world.staff.userId,
+      );
+
+      const visitor = anonClient();
+      await sendInvitationOtp(visitor, { token });
+
+      // waitForOtp only matches a 6-digit code in the delivered message — it fails on its own
+      // timeout if the address only ever received the link-based confirmation email instead.
+      const code = await waitForOtp(invitedEmail);
+      expect(code).toMatch(/^\d{6}$/);
+
+      const confirmedUser = await findAuthUserByEmail(adminClient(), invitedEmail.toLowerCase());
+      expect(confirmedUser?.email_confirmed_at).toBeTruthy();
     });
   });
 

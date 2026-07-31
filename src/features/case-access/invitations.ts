@@ -1,6 +1,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { Database } from '@/types/database';
 import { createAdminClient, type AdminClient } from '@/lib/supabase/admin';
+import { findAuthUserByEmail } from '@/application/invite-member';
 import { parseInput } from '@/lib/validation/parse';
 import { recordAuditEvent } from '@/features/audit/record';
 import { generateInvitationToken, hashInvitationToken } from './tokens';
@@ -227,12 +228,45 @@ export async function sendInvitationOtp(
   // now that enable_confirmations = true (needed for the real /signup flow), which carries no code
   // and would leave the invited Client with nothing to enter. Creating the user pre-confirmed
   // makes signInWithOtp treat every invited address as "existing", regardless of that global
-  // setting. "already exists" is expected and fine on any retry/resend.
+  // setting.
+  //
+  // "already exists" is expected on any retry/resend, but existing does not imply confirmed: the
+  // public /signup page can create an unconfirmed identity for any address, including one that
+  // gets invited to a Case afterward. Treating email_exists as always-fine left that address stuck
+  // getting the link-only confirmation email forever — the same failure this pre-confirm step
+  // exists to prevent — so an existing-but-unconfirmed identity is explicitly confirmed here too.
   const { error: createError } = await admin.auth.admin.createUser({
     email: grant.invited_email,
     email_confirm: true,
   });
-  if (createError && createError.code !== 'email_exists') {
+  if (createError && createError.code === 'email_exists') {
+    const existing = await findAuthUserByEmail(admin, grant.invited_email.toLowerCase());
+    // Absent, not null, on an unconfirmed user (verified against the actual admin API response
+    // shape) — a strict `=== null` check would silently never fire.
+    if (existing && !existing.email_confirmed_at) {
+      const { error: confirmError } = await admin.auth.admin.updateUserById(existing.id, {
+        email_confirm: true,
+      });
+      if (confirmError) {
+        await admin
+          .from('case_access_grants')
+          .update({ invitation_status: 'failed', invitation_last_error: confirmError.message.slice(0, 500) })
+          .eq('id', grant.id);
+
+        await recordAuditEvent(admin, {
+          organizationId: grant.organization_id,
+          caseId: grant.case_id,
+          action: 'grant.otp_sent',
+          targetType: 'case_access_grant',
+          targetId: grant.id,
+          actor: { kind: 'system' },
+          metadata: { delivered: false },
+        });
+
+        throw new Error(`Could not prepare invited account: ${confirmError.message}`);
+      }
+    }
+  } else if (createError) {
     await admin
       .from('case_access_grants')
       .update({ invitation_status: 'failed', invitation_last_error: createError.message.slice(0, 500) })

@@ -25,9 +25,11 @@ const LIST_USERS_MAX_PAGES = 25;
  * Paginated lookup by exact, normalized email — the same bound and approach as
  * tests/helpers/fixtures.ts's findAuthUserIdByEmail and scripts/seed-demo.mjs's
  * findUserByEmail, moved into product code since this is the first place a real feature (not a
- * fixture) needs it. Never a partial/substring match.
+ * fixture) needs it. Never a partial/substring match. Exported for reuse by
+ * src/features/case-access/invitations.ts's sendInvitationOtp, which needs the same lookup to
+ * confirm-if-needed an invited address that already has an (unconfirmed) auth identity.
  */
-async function findAuthUserByEmail(admin: AdminClient, normalizedEmail: string) {
+export async function findAuthUserByEmail(admin: AdminClient, normalizedEmail: string) {
   for (let page = 1; page <= LIST_USERS_MAX_PAGES; page += 1) {
     const { data, error } = await admin.auth.admin.listUsers({ page, perPage: LIST_USERS_PAGE_SIZE });
     if (error) throw new Error(`Could not list users: ${error.message}`);
