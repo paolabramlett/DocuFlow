@@ -29,19 +29,22 @@ export default function OnboardingPage() {
     setPending(true);
     setError(null);
 
-    const result = await completeOnboardingAction({
-      password,
-      passwordConfirmation,
-      organizationName,
-      organizationIndustry,
-    });
+    try {
+      const result = await completeOnboardingAction({
+        password,
+        passwordConfirmation,
+        organizationName,
+        organizationIndustry,
+      });
 
-    setPending(false);
-    if (result.ok) {
-      router.replace("/cases");
-      router.refresh();
-    } else {
-      setError(result.message);
+      if (result.ok) {
+        router.replace("/cases");
+        router.refresh();
+      } else {
+        setError(result.message);
+      }
+    } finally {
+      setPending(false);
     }
   }
 

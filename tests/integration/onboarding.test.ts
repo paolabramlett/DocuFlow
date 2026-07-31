@@ -3,9 +3,9 @@ import * as supabaseServerModule from '@/lib/supabase/server';
 import { completeOnboardingAction } from '@/app/onboarding/actions';
 import { createTestUser, type TestUser } from '../helpers/clients';
 
-// completeOnboardingAction internally calls requireOnboarding(), which depends on the Next.js
-// request-scoped cookie client (@/lib/supabase/server's createClient) — not directly invokable
-// from a plain Vitest test. This reuses the exact mocking pattern already established in
+// completeOnboardingAction depends on the Next.js request-scoped cookie client
+// (@/lib/supabase/server's createClient) — not directly invokable from a plain Vitest test. This
+// reuses the exact mocking pattern already established in
 // tests/integration/invite-member-action.test.ts (vi.mock the module, vi.spyOn its createClient
 // export), but resolves it to a REAL, already-authenticated TestUser client rather than an empty
 // mock object — so the RPC calls inside completeOnboardingAction hit real local Postgres and the
@@ -38,7 +38,7 @@ describe('completeOnboardingAction', () => {
     }
   });
 
-  it('rejects mismatched password confirmation without touching the database', async () => {
+  it('rejects mismatched password confirmation', async () => {
     const user = await createTestUser('onboarding-mismatch');
     actAsTestUser(user);
 
@@ -82,7 +82,7 @@ describe('completeOnboardingAction', () => {
     const result = await completeOnboardingAction({
       password: 'a-real-password-123',
       passwordConfirmation: 'a-real-password-123',
-      organizationName: 'Should Not Be Created Either',
+      organizationName: 'Onboarding Badpassword Probe',
       organizationIndustry: 'notary',
     });
 

@@ -5,7 +5,7 @@ import { createClient } from "@/lib/supabase/server";
 import { getStaffContext, resolveOnboardingRedirect } from "@/features/auth/context";
 import { passwordsAreValid } from "@/features/auth/password";
 import { ValidationError, parseInput } from "@/lib/validation/parse";
-import { ok, type ActionResult } from "@/application/errors";
+import { fail, ok, type ActionResult } from "@/application/errors";
 
 const completeOnboardingSchema = z.object({
   organizationName: z.string().trim().min(1).max(200),
@@ -28,7 +28,14 @@ export async function completeOnboardingAction(input: {
   const {
     data: { user },
   } = await supabase.auth.getUser();
-  const staffContext = user !== null ? await getStaffContext() : null;
+  let staffContext;
+  try {
+    staffContext = user !== null ? await getStaffContext() : null;
+  } catch (error) {
+    // getStaffContext() throws on a genuine query failure (not "no membership yet") — this action
+    // must never throw across the client boundary, so surface it as a normal ActionResult instead.
+    return fail(error);
+  }
   const redirectTarget = resolveOnboardingRedirect(user !== null, staffContext !== null);
 
   if (redirectTarget === "/login") {
