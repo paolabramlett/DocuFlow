@@ -2,7 +2,7 @@ import { redirect } from "next/navigation";
 import type { NextRequest } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 
-// The two templates (supabase/templates/invite.html, recovery.html) are the only source of links
+// The three templates (supabase/templates/invite.html, recovery.html, confirmation.html) are the only source of links
 // into this route, and each hardcodes its own single type — narrower than the full EmailOtpType
 // union so this can't quietly become a general-purpose confirmation endpoint for a flow (e.g.
 // the Client Portal's OTP code) that was never meant to reach it.
@@ -32,10 +32,10 @@ function isSupportedOtpType(value: string | null): value is SupportedOtpType {
  * an old session in place after a failed exchange reopens the exact bug this route exists to
  * close — a visitor's own stale session would silently pass as "valid link".
  *
- * `next` only ever comes from links this app generates itself (both templates hardcode
- * `next=/set-password`), but it is unauthenticated, attacker-writable query input on a public GET
- * route, so it is restricted to an internal path rather than trusted as an arbitrary redirect
- * target.
+ * `next` only ever comes from links this app generates itself (invite.html and recovery.html
+ * hardcode `next=/set-password`, while confirmation.html hardcodes `next=/onboarding`), but it
+ * is unauthenticated, attacker-writable query input on a public GET route, so it is restricted to
+ * an internal path rather than trusted as an arbitrary redirect target.
  */
 // A leading-slash-and-nothing-else check is not enough: browsers parse a leading "/\" or a
 // tab/newline right after the first "/" (e.g. "/\evil.com", "/%09/evil.com" decoded to a literal
