@@ -83,6 +83,11 @@ export default function LoginPage() {
               ¿Olvidaste tu contraseña?
             </Link>
           </p>
+          <p className="mt-3 text-center text-sm">
+            <Link href="/signup" className="font-medium text-royal-600 hover:text-royal-700">
+              Crear una cuenta
+            </Link>
+          </p>
         </form>
 
         <p className="mt-5 text-center font-mono text-xs text-text-secondary/70">
