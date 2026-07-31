@@ -51,7 +51,11 @@ function rethrowInvitationError(cause: unknown): never {
 function invitationMessage(reason: InvitationFailure): string {
   switch (reason) {
     case 'invalid_token':
-      return 'Este enlace no es válido. Verifica que lo copiaste completo.';
+      // Covers two real cases honestly in one message: a genuinely malformed/mistyped link, and a
+      // link superseded by a newer one issued after a "Recordar" click or an automatic reminder
+      // (emit_participant_invitation rotates the credential, which immediately retires the old
+      // hash — see supabase/migrations/20260731130000_participant_invitation_reissue.sql).
+      return 'Este enlace ya no es válido. Si recibiste un correo más reciente, usa ese enlace; si no, pide a la notaría que te envíe uno nuevo.';
     case 'revoked':
       return 'Este enlace ya no está disponible. Contacta a la notaría para uno nuevo.';
     case 'expired':

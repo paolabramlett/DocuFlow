@@ -11,7 +11,7 @@ import { useState } from "react";
 import { AppShell, type ShellAccount } from "@/components/app-shell";
 import { IconCheck, IconClock, IconDot, IconEye, IconPlus, IconSearch, IconX, type IconProps } from "@/components/icons";
 import type { CaseView, OperativeCounts, ParticipantView, ReqDisplayState, RequirementView } from "@/features/cases/queries";
-import { reviewDocumentAction } from "./actions";
+import { reviewDocumentAction, sendManualReminderAction } from "./actions";
 
 const REQ: Record<ReqDisplayState, { label: string; fg: string; bg: string; bar: string; Icon: (p: IconProps) => React.ReactElement }> = {
   approved: { label: "Aprobado", fg: "text-success", bg: "bg-success-bg", bar: "bg-success", Icon: IconCheck },
@@ -205,7 +205,7 @@ function RequirementRow({ r }: { r: RequirementView }) {
   }
 
   return (
-    <li className="border-b border-border px-5 py-3 last:border-b-0">
+    <li id={`req-${r.id}`} className="border-b border-border px-5 py-3 last:border-b-0">
       <div className="flex items-center gap-3">
         <span className={`flex size-6 shrink-0 items-center justify-center rounded-full ${m.bg} ${m.fg}`}><m.Icon className="size-3.5" /></span>
         <span className="flex-1 text-sm text-text-primary">{r.label}</span>
@@ -268,6 +268,8 @@ function CaseDetail({ c }: { c: CaseView }) {
   const k = counts(reqs);
   const p = pct(reqs);
   const done = k.total > 0 && k.approved === k.total;
+  const [reminding, setReminding] = useState(false);
+  const [reminderMessage, setReminderMessage] = useState<string | null>(null);
 
   if (done) {
     return (
@@ -283,6 +285,34 @@ function CaseDetail({ c }: { c: CaseView }) {
   }
 
   const segments = reqs;
+  const firstReview = reqs.find((r) => r.state === "review");
+
+  function goToReview() {
+    if (!firstReview) return;
+    document.getElementById(`req-${firstReview.id}`)?.scrollIntoView({ behavior: "smooth", block: "center" });
+  }
+
+  async function remind() {
+    setReminding(true);
+    setReminderMessage(null);
+    const result = await sendManualReminderAction(c.id);
+    setReminding(false);
+    if (!result.ok) {
+      setReminderMessage(result.message);
+      return;
+    }
+    const { remindedCount, failures } = result.data;
+    if (remindedCount === 0 && failures.length === 0) {
+      setReminderMessage("Nadie tiene documentos pendientes para recordar.");
+    } else if (failures.length > 0) {
+      setReminderMessage(
+        `Recordatorio enviado a ${remindedCount} participante${remindedCount === 1 ? "" : "s"}. No pudimos enviarlo a ${failures.length}${remindedCount > 0 ? " más" : ""}.`,
+      );
+    } else {
+      setReminderMessage(`Recordatorio enviado a ${remindedCount} participante${remindedCount > 1 ? "s" : ""}.`);
+    }
+  }
+
   return (
     <div className="flex h-full flex-col">
       <div className="flex items-start justify-between gap-4 border-b border-border px-7 py-5">
@@ -290,10 +320,23 @@ function CaseDetail({ c }: { c: CaseView }) {
           <div className="font-mono text-xs text-text-secondary tabular">{c.ref}</div>
           <h2 className="mt-1 text-xl font-semibold tracking-tight text-text-primary">{c.title}</h2>
           <p className="mt-1 text-sm text-text-secondary">{c.participants.length} participante{c.participants.length > 1 ? "s" : ""} · abierto el {c.opened}</p>
+          {reminderMessage && <p className="mt-1 text-xs text-text-secondary">{reminderMessage}</p>}
         </div>
         <div className="flex items-center gap-2">
-          <button className="rounded-input border border-border bg-surface px-3.5 py-2 text-sm font-medium text-text-primary transition-colors hover:bg-app-bg">Recordar</button>
-          <button className="rounded-input bg-royal-600 px-3.5 py-2 text-sm font-semibold text-white transition-colors hover:bg-royal-700">Revisar documentos</button>
+          <button
+            onClick={remind}
+            disabled={reminding}
+            className="rounded-input border border-border bg-surface px-3.5 py-2 text-sm font-medium text-text-primary transition-colors hover:bg-app-bg disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {reminding ? "Enviando…" : "Recordar"}
+          </button>
+          <button
+            onClick={goToReview}
+            disabled={!firstReview}
+            className="rounded-input bg-royal-600 px-3.5 py-2 text-sm font-semibold text-white transition-colors hover:bg-royal-700 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            Revisar documentos
+          </button>
         </div>
       </div>
 

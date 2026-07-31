@@ -22,6 +22,7 @@ export type AuditAction =
   | 'review.decided'
   | 'reminder.sent'
   | 'reminder.failed'
+  | 'reminder.sent_manual'
   | 'member.added'
   | 'member.removed'
   | 'blueprint.created'

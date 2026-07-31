@@ -1029,6 +1029,15 @@ export type Database = {
         Args: { organization_industry: string; organization_name: string }
         Returns: string
       }
+      emit_participant_invitation: {
+        Args: { p_participant_id: string }
+        Returns: {
+          case_id: string
+          invited_email: string
+          organization_id: string
+          token: string
+        }[]
+      }
       org_members_with_email: {
         Args: { target_organization_id: string }
         Returns: {

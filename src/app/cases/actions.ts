@@ -21,6 +21,7 @@ import {
   type CreatedCase,
 } from "@/application/create-case-with-participants";
 import { reviewDocument, type ReviewDocumentInput } from "@/application/review-document";
+import { sendManualReminder, type SendManualReminderResult } from "@/application/send-manual-reminder";
 import { getBlueprintDefinition, type BlueprintDefinition } from "@/features/blueprints/queries";
 
 export async function createCaseAction(
@@ -58,6 +59,22 @@ export async function reviewDocumentAction(input: ReviewDocumentInput): Promise<
 
     revalidatePath("/cases");
     return ok(null);
+  } catch (error) {
+    return fail(error);
+  }
+}
+
+export async function sendManualReminderAction(caseId: string): Promise<ActionResult<SendManualReminderResult>> {
+  try {
+    const staff = await getStaffContext();
+    if (!staff) {
+      return { ok: false, reason: "unauthenticated", message: "Tu sesión expiró. Inicia sesión de nuevo." };
+    }
+
+    const supabase = await createClient();
+    const result = await sendManualReminder(supabase, { organizationId: staff.organizationId, caseId }, staff.userId);
+
+    return ok(result);
   } catch (error) {
     return fail(error);
   }

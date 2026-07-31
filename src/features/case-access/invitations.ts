@@ -115,6 +115,43 @@ export async function issueInvitation(
   return { grantId: grant.id, token };
 }
 
+export interface ReissuedInvitation {
+  readonly token: string;
+  readonly invitedEmail: string;
+  readonly caseId: string;
+  readonly organizationId: string;
+}
+
+/**
+ * Rotates an already-invited participant's Portal credential — a fresh token, the previous one
+ * invalidated (its old hash no longer exists once this returns). Never creates a first invitation;
+ * that's still issueInvitation()'s job, on plain grants_insert_by_member RLS.
+ *
+ * Thin wrapper around the `emit_participant_invitation` RPC (supabase/migrations/
+ * 20260731130000_participant_invitation_reissue.sql) so the "Recordar" Server Action and the
+ * reminder cron's Edge Function share the exact same reissue semantics — one implementation, not
+ * two independently-evolving copies of "what does a fresh Portal link mean."
+ */
+export async function reissueParticipantInvitation(
+  client: DbClient,
+  participantId: string,
+): Promise<ReissuedInvitation> {
+  const { data, error } = await client
+    .rpc('emit_participant_invitation', { p_participant_id: participantId })
+    .single();
+
+  if (error || !data) {
+    throw new Error(`Could not reissue invitation: ${error?.message ?? 'no row returned'}`);
+  }
+
+  return {
+    token: data.token,
+    invitedEmail: data.invited_email,
+    caseId: data.case_id,
+    organizationId: data.organization_id,
+  };
+}
+
 // ------------------------------------------------------------------------------------------------
 // The unauthenticated side of the flow
 // ------------------------------------------------------------------------------------------------

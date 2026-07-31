@@ -112,12 +112,26 @@ Deno.serve(async (request: Request) => {
       if (d.participant_id) outstandingQuery = outstandingQuery.eq('participant_id', d.participant_id);
       const { count: outstanding } = await outstandingQuery;
 
+      // The Portal link is a fresh credential, not the original invitation's — that plaintext
+      // token was never persisted anywhere (only its hash), so there is nothing here to "look up"
+      // and resend. emit_participant_invitation (supabase/migrations/
+      // 20260731130000_participant_invitation_reissue.sql) is the single shared implementation of
+      // "issue a fresh Portal link for this participant" — the same one the staff "Recordar"
+      // button in the Next.js app calls, so both paths stay identical instead of drifting apart.
+      if (!d.participant_id) throw new Error('reminder delivery has no participant_id');
+      const { data: reissued, error: reissueError } = await admin
+        .rpc('emit_participant_invitation', { p_participant_id: d.participant_id })
+        .single();
+      if (reissueError || !reissued) {
+        throw new Error(`could not reissue invitation: ${reissueError?.message ?? 'no row returned'}`);
+      }
+
       const orgName = (caseRow?.organization as { name?: string } | null)?.name ?? '';
       const count = outstanding ?? 1;
       const noun = count === 1 ? 'item' : 'items';
       const html = [
         `<p>${orgName} is waiting on ${count} ${noun} for your case, ${caseRow?.title ?? ''}.</p>`,
-        `<p><a href="${appOrigin}/invite/${d.grant_id}">Continue your case</a></p>`,
+        `<p><a href="${appOrigin}/portal/${reissued.token}">Continue your case</a></p>`,
       ].join('\n');
 
       await sendViaResend(resendKey, from, d.destination, `Action needed: ${caseRow?.title ?? ''}`, html);
