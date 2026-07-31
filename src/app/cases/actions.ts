@@ -21,6 +21,7 @@ import {
   type CreatedCase,
 } from "@/application/create-case-with-participants";
 import { reviewDocument, type ReviewDocumentInput } from "@/application/review-document";
+import { createDocumentDownloadUrl } from "@/features/documents/documents";
 import { sendManualReminder, type SendManualReminderResult } from "@/application/send-manual-reminder";
 import { getBlueprintDefinition, type BlueprintDefinition } from "@/features/blueprints/queries";
 
@@ -75,6 +76,22 @@ export async function sendManualReminderAction(caseId: string): Promise<ActionRe
     const result = await sendManualReminder(supabase, { organizationId: staff.organizationId, caseId }, staff.userId);
 
     return ok(result);
+  } catch (error) {
+    return fail(error);
+  }
+}
+
+export async function getDocumentDownloadUrlAction(documentId: string): Promise<ActionResult<string>> {
+  try {
+    const staff = await getStaffContext();
+    if (!staff) {
+      return { ok: false, reason: "unauthenticated", message: "Tu sesión expiró. Inicia sesión de nuevo." };
+    }
+
+    const supabase = await createClient();
+    const url = await createDocumentDownloadUrl(supabase, documentId);
+
+    return ok(url);
   } catch (error) {
     return fail(error);
   }

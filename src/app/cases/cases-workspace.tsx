@@ -11,7 +11,7 @@ import { useState } from "react";
 import { AppShell, type ShellAccount } from "@/components/app-shell";
 import { IconCheck, IconClock, IconDot, IconEye, IconPlus, IconSearch, IconX, type IconProps } from "@/components/icons";
 import type { CaseView, OperativeCounts, ParticipantView, ReqDisplayState, RequirementView } from "@/features/cases/queries";
-import { reviewDocumentAction, sendManualReminderAction } from "./actions";
+import { getDocumentDownloadUrlAction, reviewDocumentAction, sendManualReminderAction } from "./actions";
 
 const REQ: Record<ReqDisplayState, { label: string; fg: string; bg: string; bar: string; Icon: (p: IconProps) => React.ReactElement }> = {
   approved: { label: "Aprobado", fg: "text-success", bg: "bg-success-bg", bar: "bg-success", Icon: IconCheck },
@@ -176,11 +176,29 @@ function ParticipantColumn({ p }: { p: ParticipantView }) {
 
 function RequirementRow({ r }: { r: RequirementView }) {
   const m = REQ[r.state];
-  const [busy, setBusy] = useState<"approve" | "reject" | null>(null);
+  const [busy, setBusy] = useState<"approve" | "reject" | "view" | null>(null);
   const [rejecting, setRejecting] = useState(false);
   const [reason, setReason] = useState("");
   const [error, setError] = useState<string | null>(null);
   const router = useRouter();
+
+  async function view() {
+    if (!r.documentId) return;
+    // Opened synchronously, before the await, so browser popup blockers see it as a direct
+    // response to the click — setting .location once the signed URL is ready, rather than
+    // calling window.open() only after the async round-trip, which most blockers reject.
+    const tab = window.open("", "_blank", "noopener,noreferrer");
+    setBusy("view");
+    setError(null);
+    const result = await getDocumentDownloadUrlAction(r.documentId);
+    setBusy(null);
+    if (!result.ok) {
+      tab?.close();
+      setError(result.message);
+      return;
+    }
+    if (tab) tab.location.href = result.data;
+  }
 
   async function approve() {
     if (!r.documentId) return;
@@ -211,6 +229,13 @@ function RequirementRow({ r }: { r: RequirementView }) {
         <span className="flex-1 text-sm text-text-primary">{r.label}</span>
         {r.state === "review" && r.documentId ? (
           <div className="flex items-center gap-1.5">
+            <button
+              onClick={view}
+              disabled={busy !== null}
+              className="rounded-input border border-border bg-surface px-2.5 py-1 text-xs font-medium text-text-primary transition-colors hover:bg-app-bg disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {busy === "view" ? "Abriendo…" : "Ver documento"}
+            </button>
             <button
               onClick={approve}
               disabled={busy !== null}
