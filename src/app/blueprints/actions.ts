@@ -19,15 +19,15 @@ import { getBlueprintDefinition, type BlueprintDefinition } from "@/features/blu
 export async function saveBlueprintAction(
   input: Omit<SaveBlueprintInput, "organizationId">,
 ): Promise<ActionResult<{ blueprintId: string }>> {
-  const staff = await getStaffContext();
-  if (!staff) {
-    return { ok: false, reason: "unauthenticated", message: "Tu sesión expiró. Inicia sesión de nuevo." };
-  }
-  if (staff.role !== "owner") {
-    return { ok: false, reason: "forbidden", message: "Solo el propietario puede crear o editar plantillas." };
-  }
-
   try {
+    const staff = await getStaffContext();
+    if (!staff) {
+      return { ok: false, reason: "unauthenticated", message: "Tu sesión expiró. Inicia sesión de nuevo." };
+    }
+    if (staff.role !== "owner") {
+      return { ok: false, reason: "forbidden", message: "Solo el propietario puede crear o editar plantillas." };
+    }
+
     const client = await createClient();
     const result = await saveBlueprint(client, { ...input, organizationId: staff.organizationId }, staff.userId);
     revalidatePath("/blueprints");
@@ -38,15 +38,15 @@ export async function saveBlueprintAction(
 }
 
 export async function deleteBlueprintAction(blueprintId: string): Promise<ActionResult<{ blueprintId: string }>> {
-  const staff = await getStaffContext();
-  if (!staff) {
-    return { ok: false, reason: "unauthenticated", message: "Tu sesión expiró. Inicia sesión de nuevo." };
-  }
-  if (staff.role !== "owner") {
-    return { ok: false, reason: "forbidden", message: "Solo el propietario puede eliminar plantillas." };
-  }
-
   try {
+    const staff = await getStaffContext();
+    if (!staff) {
+      return { ok: false, reason: "unauthenticated", message: "Tu sesión expiró. Inicia sesión de nuevo." };
+    }
+    if (staff.role !== "owner") {
+      return { ok: false, reason: "forbidden", message: "Solo el propietario puede eliminar plantillas." };
+    }
+
     const client = await createClient();
     const result = await deleteBlueprint(client, { organizationId: staff.organizationId, blueprintId }, staff.userId);
     revalidatePath("/blueprints");

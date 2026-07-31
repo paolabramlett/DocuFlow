@@ -1,11 +1,11 @@
-import { describe, expect, it } from 'vitest';
+import { randomUUID } from 'node:crypto';
+import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { addStaffMember, createOrganizationWithOwner } from '../helpers/clients';
+import * as supabaseServerModule from '@/lib/supabase/server';
+import { getStaffContext } from '@/features/auth/context';
 
-// getStaffContext() (src/features/auth/context.ts) internally calls createClient() from
-// @/lib/supabase/server, a Next.js server-context-bound cookie client that can't be swapped for
-// an arbitrary TestUser client. So these tests exercise the same underlying query directly
-// against real TestUser clients, proving the fix's mechanism rather than calling the function
-// itself.
+vi.mock('@/lib/supabase/server');
+
 describe('members query underlying getStaffContext', () => {
   it("without a user_id filter, a non-owner can still see the owner's row via RLS (the bug's root cause)", async () => {
     const { organizationId, owner } = await createOrganizationWithOwner('Notaría Context Bug', 'notary');
@@ -40,21 +40,35 @@ describe('members query underlying getStaffContext', () => {
     expect(ownerRow?.role).toBe('owner');
     expect(staffRow?.role).toBe('staff');
   });
+});
 
-  it('propagates a genuine query error rather than returning null', async () => {
-    // getStaffContext() itself can't be invoked directly here (it depends on the Next.js
-    // request-scoped cookie client) — this proves the underlying error-checking logic instead,
-    // matching this file's existing convention for the same reason.
-    const { organizationId, owner } = await createOrganizationWithOwner('Notaría Context Error', 'notary');
-    const { error } = await owner.client
-      .from('members')
-      .select('role, organization:organizations(id, name, industry)')
-      .eq('user_id', 'not-a-valid-uuid') // malformed filter value forces a real Postgres error
-      .order('created_at', { ascending: true })
-      .limit(1)
-      .maybeSingle();
+describe('getStaffContext error propagation', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
 
-    expect(error).not.toBeNull();
-    void organizationId;
+  it('throws when the underlying members query returns an error, rather than swallowing it', async () => {
+    const userId = randomUUID();
+
+    // Minimal chainable stub covering just the .from('members').select().eq().order().limit()
+    // .maybeSingle() call chain getStaffContext() makes, plus .auth.getUser().
+    const queryBuilder = {
+      select: vi.fn().mockReturnThis(),
+      eq: vi.fn().mockReturnThis(),
+      order: vi.fn().mockReturnThis(),
+      limit: vi.fn().mockReturnThis(),
+      maybeSingle: vi.fn().mockResolvedValue({ data: null, error: { message: 'simulated failure' } }),
+    };
+
+    const mockClient = {
+      auth: {
+        getUser: vi.fn().mockResolvedValue({ data: { user: { id: userId, email: 'owner@example.test' } } }),
+      },
+      from: vi.fn().mockReturnValue(queryBuilder),
+    };
+
+    vi.spyOn(supabaseServerModule, 'createClient').mockResolvedValue(mockClient as never);
+
+    await expect(getStaffContext()).rejects.toThrow('getStaffContext: simulated failure');
   });
 });
