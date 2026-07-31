@@ -37,6 +37,26 @@ sit in indefinitely (e.g., someone who verifies their email and abandons before 
 future feature that touches identity/membership (invitations, switching organizations, accepting
 an invite before or after completing onboarding) must account for this state existing.
 
+### Known limitation, deliberately deferred: Portal Client sessions and the staff guard
+
+`resolveStaffRedirect`/`requireStaff` cannot distinguish "authenticated, no organization yet
+because onboarding is incomplete" from "authenticated, no organization, because this is a Portal
+Client session" — a real Supabase session created by the Client Portal's own OTP flow
+(`src/features/case-access/invitations.ts`'s `signInWithOtp`/`verifyOtp`), which never inserts a
+`members` row. Both states look identical to `getStaffContext()`: a session with no membership.
+Concretely, a Portal Client who hits a staff-gated page (by mistake, or by following a stale
+bookmark) is now routed to `/onboarding` instead of `/login`.
+
+This is not a new hole RLS-wise — a Client could already self-serve a brand-new Organization via
+`/signup` with any email today, regardless of this routing decision — but it is a real, silent
+posture change worth naming rather than leaving implicit. The correct fix is not one more
+conditional bolted onto `resolveStaffRedirect`: it is a genuine classification of authenticated-
+identity kinds (staff vs. Portal Client vs. onboarding-in-progress), which is a separable piece of
+work with its own design tradeoffs. This spec deliberately does not attempt that here. Until that
+design exists, `resolveStaffRedirect` routes every session-without-membership to `/onboarding`,
+and any future change to that behavior must be made with this limitation in mind, not treated as
+an isolated bug fix.
+
 ## Architecture overview
 
 ```
