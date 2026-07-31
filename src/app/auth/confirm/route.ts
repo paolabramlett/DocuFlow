@@ -6,7 +6,7 @@ import { createClient } from "@/lib/supabase/server";
 // into this route, and each hardcodes its own single type — narrower than the full EmailOtpType
 // union so this can't quietly become a general-purpose confirmation endpoint for a flow (e.g.
 // the Client Portal's OTP code) that was never meant to reach it.
-const SUPPORTED_OTP_TYPES = ["invite", "recovery"] as const;
+const SUPPORTED_OTP_TYPES = ["invite", "recovery", "signup"] as const;
 type SupportedOtpType = (typeof SUPPORTED_OTP_TYPES)[number];
 
 function isSupportedOtpType(value: string | null): value is SupportedOtpType {

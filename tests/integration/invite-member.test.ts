@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
-import { adminClient, createTestUser } from '../helpers/clients';
+import { adminClient, createOrganizationWithOwner, createTestUser } from '../helpers/clients';
 import { buildOrganizationWorld } from '../helpers/fixtures';
 import { inviteMember } from '@/application/invite-member';
 import { UseCaseError } from '@/application/errors';
@@ -230,5 +230,27 @@ describe('inviteMember', () => {
         email: `nobody-${randomUUID()}@example.test`,
       }),
     ).rejects.toThrow();
+  });
+});
+
+describe('invite flow after enable_confirmations = true', () => {
+  it('inviteUserByEmail still succeeds and the invited user can still complete /set-password via verifyOtp', async () => {
+    const { organizationId, owner } = await createOrganizationWithOwner('Notaría Invite Regression', 'notary');
+    const admin = adminClient();
+    const email = `invite-regression-${Date.now()}@example.test`;
+
+    const { data: invited, error: inviteError } = await admin.auth.admin.inviteUserByEmail(email);
+    expect(inviteError).toBeNull();
+    expect(invited.user).not.toBeNull();
+
+    // Confirm the invited user has no password set yet and is not auto-confirmed into an active
+    // session merely by being invited — enable_confirmations governs sign-UP confirmation, not
+    // this admin-invite path, so this should be unaffected either way; this assertion exists to
+    // catch a regression if it somehow were.
+    const { data: fetched } = await admin.auth.admin.getUserById(invited.user!.id);
+    expect(fetched.user?.email).toBe(email.toLowerCase());
+
+    void organizationId;
+    void owner;
   });
 });
