@@ -214,6 +214,7 @@ export type Database = {
       }
       case_access_grants: {
         Row: {
+          action_required_notified_at: string | null
           auth_user_id: string | null
           case_id: string
           created_at: string
@@ -236,6 +237,7 @@ export type Database = {
           verified_at: string | null
         }
         Insert: {
+          action_required_notified_at?: string | null
           auth_user_id?: string | null
           case_id: string
           created_at?: string
@@ -258,6 +260,7 @@ export type Database = {
           verified_at?: string | null
         }
         Update: {
+          action_required_notified_at?: string | null
           auth_user_id?: string | null
           case_id?: string
           created_at?: string
