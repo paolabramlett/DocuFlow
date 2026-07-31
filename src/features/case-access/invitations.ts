@@ -221,6 +221,36 @@ export async function sendInvitationOtp(
     }
   }
 
+  // Pre-confirm the invited address before requesting the OTP. GoTrue's mailer only sends the
+  // numeric-code magic-link email to an *existing, confirmed* user — for a brand-new address
+  // (the normal case for a first-time invitee) it instead sends the link-based confirmation email
+  // now that enable_confirmations = true (needed for the real /signup flow), which carries no code
+  // and would leave the invited Client with nothing to enter. Creating the user pre-confirmed
+  // makes signInWithOtp treat every invited address as "existing", regardless of that global
+  // setting. "already exists" is expected and fine on any retry/resend.
+  const { error: createError } = await admin.auth.admin.createUser({
+    email: grant.invited_email,
+    email_confirm: true,
+  });
+  if (createError && createError.code !== 'email_exists') {
+    await admin
+      .from('case_access_grants')
+      .update({ invitation_status: 'failed', invitation_last_error: createError.message.slice(0, 500) })
+      .eq('id', grant.id);
+
+    await recordAuditEvent(admin, {
+      organizationId: grant.organization_id,
+      caseId: grant.case_id,
+      action: 'grant.otp_sent',
+      targetType: 'case_access_grant',
+      targetId: grant.id,
+      actor: { kind: 'system' },
+      metadata: { delivered: false },
+    });
+
+    throw new Error(`Could not prepare invited account: ${createError.message}`);
+  }
+
   const { error } = await authClient.auth.signInWithOtp({
     email: grant.invited_email,
     options: { shouldCreateUser: true },
