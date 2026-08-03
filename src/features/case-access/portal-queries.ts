@@ -33,6 +33,8 @@ export interface PortalRequirement {
 export interface PortalCase {
   readonly organizationName: string;
   readonly caseTitle: string;
+  readonly caseState: 'open' | 'completed' | 'cancelled';
+  readonly clientClosingNote?: string;
   readonly requirements: PortalRequirement[];
 }
 
@@ -106,7 +108,7 @@ export async function getPortalCase(client: DbClient, participantId: string): Pr
   const { data, error } = await client
     .from('case_participants')
     .select(
-      `case:cases(title, organization:organizations(name)),
+      `case:cases(title, state, client_closing_note, organization:organizations(name)),
        requirements(id, label, position, status, deleted_at, superseded_at,
          documents(id, file_name, created_at, reviews(decision, reason, created_at)))`,
     )
@@ -135,6 +137,8 @@ export async function getPortalCase(client: DbClient, participantId: string): Pr
   return {
     organizationName: data.case.organization?.name ?? '',
     caseTitle: data.case.title,
+    caseState: data.case.state as 'open' | 'completed' | 'cancelled',
+    clientClosingNote: data.case.client_closing_note ?? undefined,
     requirements,
   };
 }

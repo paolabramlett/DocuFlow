@@ -144,6 +144,8 @@ export async function verifyAccessCode(client: DbClient, input: { token: string;
 export interface PortalState {
   readonly organizationName: string;
   readonly caseTitle: string;
+  readonly caseState: 'open' | 'completed' | 'cancelled';
+  readonly clientClosingNote?: string;
   readonly requirements: PortalRequirement[];
   readonly pendingCount: number;
   readonly isComplete: boolean;

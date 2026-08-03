@@ -321,6 +321,10 @@ function Checklist({ token, state, onChanged }: { token: string; state: PortalSt
   // A Participant with zero Requirements is not "done" — there was never anything to complete
   // (design.md's documentation-complete rule: it requires at least one visible Requirement).
   const documentationComplete = state.isComplete && state.requirements.length > 0;
+  // Distinct from documentationComplete: the Case itself can be closed (completed OR cancelled)
+  // regardless of whether every Requirement was ever approved — a cancelled Case may have
+  // Requirements left pending. This check always wins over the documentationComplete branch below.
+  const caseClosed = state.caseState !== "open";
 
   return (
     <div className="min-h-screen bg-app-bg">
@@ -340,7 +344,17 @@ function Checklist({ token, state, onChanged }: { token: string; state: PortalSt
         <div className="text-sm font-medium text-royal-600">{state.organizationName}</div>
         <h1 className="mt-1 text-2xl font-semibold tracking-tight text-text-primary">{state.caseTitle}</h1>
 
-        {documentationComplete ? (
+        {caseClosed ? (
+          <>
+            <ClosedCaseBanner caseState={state.caseState} clientClosingNote={state.clientClosingNote} />
+            <h2 className="mb-3 mt-8 text-sm font-semibold text-text-primary">Tus documentos</h2>
+            <div className="space-y-3">
+              {state.requirements.map((r) => (
+                <RequirementCard key={r.id} token={token} r={r} onChanged={onChanged} readOnly />
+              ))}
+            </div>
+          </>
+        ) : documentationComplete ? (
           <>
             <CompletionBanner />
             <h2 className="mb-3 mt-8 text-sm font-semibold text-text-primary">Tus documentos</h2>
@@ -398,16 +412,43 @@ function CompletionBanner() {
   );
 }
 
+function ClosedCaseBanner({
+  caseState,
+  clientClosingNote,
+}: {
+  caseState: "completed" | "cancelled";
+  clientClosingNote?: string;
+}) {
+  const completed = caseState === "completed";
+  return (
+    <div className={`complete-rise mt-6 rounded-card border p-6 text-center ${completed ? "border-success/20 bg-success-bg/60" : "border-border bg-app-bg"}`}>
+      <div className={`mx-auto flex size-14 items-center justify-center rounded-full text-white ${completed ? "bg-success" : "bg-neutral"}`}>
+        {completed ? <IconCheck className="size-7" /> : <IconX className="size-7" />}
+      </div>
+      <h2 className="mt-4 text-lg font-semibold text-text-primary">
+        {completed ? "Expediente completado" : "Expediente cancelado"}
+      </h2>
+      <p className="mx-auto mt-1 max-w-sm text-sm text-text-secondary">
+        {completed
+          ? "Toda tu documentación requerida fue aprobada."
+          : (clientClosingNote ?? "Este expediente fue cancelado.")}
+      </p>
+    </div>
+  );
+}
+
 function RequirementCard({
   token,
   r,
   onChanged,
   quiet,
+  readOnly,
 }: {
   token: string;
   r: PortalRequirement;
   onChanged: () => void;
   quiet?: boolean;
+  readOnly?: boolean;
 }) {
   const m = META[r.state];
   const fileRef = useRef<HTMLInputElement | null>(null);
@@ -469,7 +510,7 @@ function RequirementCard({
         </div>
       </div>
 
-      {r.state === "rejected" && (
+      {r.state === "rejected" && !readOnly && (
         <div className="border-t border-border bg-error-bg/50 px-5 py-3.5">
           <p className="text-sm text-text-primary">
             <span className="font-semibold text-error">Por qué se rechazó:</span> {r.rejectionReason}
@@ -484,7 +525,7 @@ function RequirementCard({
         </div>
       )}
 
-      {r.state === "pending" && (
+      {r.state === "pending" && !readOnly && (
         <div className="border-t border-border px-5 py-4">
           <button
             onClick={() => fileRef.current?.click()}
@@ -496,7 +537,7 @@ function RequirementCard({
         </div>
       )}
 
-      {r.state === "approved" && r.documentId && (
+      {(readOnly ? r.documentId : r.state === "approved" && r.documentId) && (
         <div className="flex gap-2 border-t border-border px-5 py-3">
           <button
             onClick={() => openDocument(false)}
