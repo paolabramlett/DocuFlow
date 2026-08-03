@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { addStaffMember, adminClient, createOrganizationWithOwner } from '../helpers/clients';
+import { adminClient, createOrganizationWithOwner } from '../helpers/clients';
 
 describe('case closure: schema', () => {
   it('rejects a cancelled Case with a blank client_closing_note', async () => {
