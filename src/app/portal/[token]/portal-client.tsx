@@ -429,9 +429,7 @@ function ClosedCaseBanner({
         {completed ? "Expediente completado" : "Expediente cancelado"}
       </h2>
       <p className="mx-auto mt-1 max-w-sm text-sm text-text-secondary">
-        {completed
-          ? "Toda tu documentación requerida fue aprobada."
-          : (clientClosingNote ?? "Este expediente fue cancelado.")}
+        {clientClosingNote ?? (completed ? "Toda tu documentación requerida fue aprobada." : "Este expediente fue cancelado.")}
       </p>
     </div>
   );
