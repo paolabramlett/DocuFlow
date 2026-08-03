@@ -34,6 +34,8 @@ export interface CaseView {
   title: string;
   opened: string;
   state: string;
+  closedAt?: string;
+  clientClosingNote?: string;
   participants: ParticipantView[];
 }
 
@@ -99,7 +101,7 @@ export async function getWorkspaceCases(): Promise<CaseView[]> {
   const { data, error } = await supabase
     .from("cases")
     .select(
-      `id, title, state, created_at,
+      `id, title, state, created_at, closed_at, client_closing_note,
        participants:case_participants(id, role_label, client:clients(full_name),
          requirements(id, label, status, position, participant_id, deleted_at, superseded_at,
            documents(id, created_at, reviews(decision, reason, created_at)))
@@ -115,6 +117,8 @@ export async function getWorkspaceCases(): Promise<CaseView[]> {
     title: c.title,
     opened: formatDate(c.created_at),
     state: c.state,
+    closedAt: c.closed_at ?? undefined,
+    clientClosingNote: c.client_closing_note ?? undefined,
     participants: (c.participants ?? []).map((p) => ({
       id: p.id,
       name: p.client?.full_name ?? "—",

@@ -11,7 +11,7 @@ import { useState } from "react";
 import { AppShell, type ShellAccount } from "@/components/app-shell";
 import { IconCheck, IconClock, IconDot, IconEye, IconPlus, IconSearch, IconX, type IconProps } from "@/components/icons";
 import type { CaseView, OperativeCounts, ParticipantView, ReqDisplayState, RequirementView } from "@/features/cases/queries";
-import { getDocumentDownloadUrlAction, reviewDocumentAction, sendManualReminderAction } from "./actions";
+import { closeCaseAction, getDocumentDownloadUrlAction, reopenCaseAction, reviewDocumentAction, sendManualReminderAction } from "./actions";
 
 const REQ: Record<ReqDisplayState, { label: string; fg: string; bg: string; bar: string; Icon: (p: IconProps) => React.ReactElement }> = {
   approved: { label: "Aprobado", fg: "text-success", bg: "bg-success-bg", bar: "bg-success", Icon: IconCheck },
@@ -310,6 +310,7 @@ function CaseDetail({ c }: { c: CaseView }) {
   const done = k.total > 0 && k.approved === k.total;
   const [reminding, setReminding] = useState(false);
   const [reminderMessage, setReminderMessage] = useState<string | null>(null);
+  const [closing, setClosing] = useState(false);
 
   const segments = reqs;
   const firstReview = reqs.find((r) => r.state === "review");
@@ -356,25 +357,35 @@ function CaseDetail({ c }: { c: CaseView }) {
           >
             Descargar todo
           </a>
-          <button
-            onClick={remind}
-            disabled={reminding}
-            className="rounded-input border border-border bg-surface px-3.5 py-2 text-sm font-medium text-text-primary transition-colors hover:bg-app-bg disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {reminding ? "Enviando…" : "Recordar"}
-          </button>
-          <button
-            onClick={goToReview}
-            disabled={!firstReview}
-            className="rounded-input bg-royal-600 px-3.5 py-2 text-sm font-semibold text-white transition-colors hover:bg-royal-700 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            Revisar documentos
-          </button>
+          {c.state === "open" && (
+            <>
+              <button
+                onClick={remind}
+                disabled={reminding}
+                className="rounded-input border border-border bg-surface px-3.5 py-2 text-sm font-medium text-text-primary transition-colors hover:bg-app-bg disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {reminding ? "Enviando…" : "Recordar"}
+              </button>
+              <button
+                onClick={goToReview}
+                disabled={!firstReview}
+                className="rounded-input bg-royal-600 px-3.5 py-2 text-sm font-semibold text-white transition-colors hover:bg-royal-700 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                Revisar documentos
+              </button>
+              <button
+                onClick={() => setClosing(true)}
+                className="rounded-input border border-border bg-surface px-3.5 py-2 text-sm font-medium text-text-primary transition-colors hover:bg-app-bg"
+              >
+                Cerrar expediente
+              </button>
+            </>
+          )}
         </div>
       </div>
 
       <div className="flex-1 overflow-y-auto px-7 py-6">
-        {done && (
+        {done && c.state === "open" && (
           <div className="mb-6 flex items-center gap-3 rounded-card border border-success/20 bg-success-bg/60 px-5 py-4">
             <span className="flex size-9 shrink-0 items-center justify-center rounded-full bg-success text-white"><IconCheck className="size-4" /></span>
             <div>
@@ -383,6 +394,7 @@ function CaseDetail({ c }: { c: CaseView }) {
             </div>
           </div>
         )}
+        {c.state !== "open" && <ClosureBanner c={c} />}
         <section>
           <div className="flex items-end justify-between">
             <span className="text-xs font-semibold uppercase tracking-wider text-text-secondary">Progreso del expediente</span>
@@ -408,6 +420,152 @@ function CaseDetail({ c }: { c: CaseView }) {
             {c.participants.map((pt) => <ParticipantColumn key={pt.id} p={pt} />)}
           </div>
         </section>
+      </div>
+      {closing && <CloseCaseModal caseId={c.id} documentationComplete={done} onClose={() => setClosing(false)} />}
+    </div>
+  );
+}
+
+function formatClosedAt(iso: string): string {
+  return new Date(iso).toLocaleDateString("es-MX", { day: "numeric", month: "long", year: "numeric" });
+}
+
+function ClosureBanner({ c }: { c: CaseView }) {
+  const [reopening, setReopening] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
+  const router = useRouter();
+  const completed = c.state === "completed";
+
+  async function reopen() {
+    setReopening(true);
+    setMessage(null);
+    const result = await reopenCaseAction(c.id);
+    setReopening(false);
+    if (!result.ok) {
+      setMessage(result.message);
+      return;
+    }
+    if (result.data.requiresReinvitation) {
+      setMessage("El cliente ya no tiene un enlace activo — usa Recordar para invitarlo de nuevo.");
+    }
+    router.refresh();
+  }
+
+  return (
+    <div className={`mb-6 flex items-start gap-3 rounded-card border px-5 py-4 ${completed ? "border-success/20 bg-success-bg/60" : "border-border bg-app-bg"}`}>
+      <span className={`flex size-9 shrink-0 items-center justify-center rounded-full text-white ${completed ? "bg-success" : "bg-neutral"}`}>
+        {completed ? <IconCheck className="size-4" /> : <IconX className="size-4" />}
+      </span>
+      <div className="flex-1">
+        <div className="text-sm font-semibold text-text-primary">
+          {completed ? "Expediente completado" : "Expediente cancelado"}
+        </div>
+        <p className="mt-0.5 text-xs text-text-secondary">
+          {c.closedAt && `Cerrado el ${formatClosedAt(c.closedAt)}.`}
+          {c.clientClosingNote && ` ${c.clientClosingNote}`}
+        </p>
+        {message && <p className="mt-1 text-xs text-text-secondary">{message}</p>}
+        <button
+          onClick={reopen}
+          disabled={reopening}
+          className="mt-2.5 rounded-input border border-border bg-surface px-3 py-1.5 text-xs font-semibold text-text-primary transition-colors hover:bg-app-bg disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {reopening ? "Reabriendo…" : "Reabrir expediente"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function CloseCaseModal({
+  caseId,
+  documentationComplete,
+  onClose,
+}: {
+  caseId: string;
+  documentationComplete: boolean;
+  onClose: () => void;
+}) {
+  const [outcome, setOutcome] = useState<"completed" | "cancelled" | null>(null);
+  const [note, setNote] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const router = useRouter();
+
+  async function submit() {
+    if (!outcome) return;
+    if (outcome === "cancelled" && !note.trim()) return;
+    setSubmitting(true);
+    setError(null);
+    const result = await closeCaseAction(caseId, outcome, note.trim() || undefined);
+    setSubmitting(false);
+    if (!result.ok) {
+      setError(result.message);
+      return;
+    }
+    onClose();
+    router.refresh();
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
+      <div className="w-full max-w-md rounded-panel border border-border bg-surface p-6 shadow-md">
+        <h3 className="text-sm font-semibold text-text-primary">Cerrar expediente</h3>
+        <div className="mt-4 space-y-3">
+          <label className="flex items-start gap-2.5">
+            <input
+              type="radio"
+              name="outcome"
+              disabled={!documentationComplete}
+              checked={outcome === "completed"}
+              onChange={() => setOutcome("completed")}
+              className="mt-0.5"
+            />
+            <span>
+              <span className="block text-sm font-medium text-text-primary">Completado</span>
+              {!documentationComplete && (
+                <span className="block text-xs text-text-secondary">Requiere documentación completa.</span>
+              )}
+            </span>
+          </label>
+          <label className="flex items-start gap-2.5">
+            <input
+              type="radio"
+              name="outcome"
+              checked={outcome === "cancelled"}
+              onChange={() => setOutcome("cancelled")}
+              className="mt-0.5"
+            />
+            <span className="block text-sm font-medium text-text-primary">Cancelado</span>
+          </label>
+        </div>
+
+        {outcome === "cancelled" && (
+          <label className="mt-3 block">
+            <span className="mb-1 block text-xs font-medium text-text-primary">Motivo de cancelación (el cliente lo verá)</span>
+            <textarea
+              value={note}
+              onChange={(e) => setNote(e.target.value)}
+              rows={3}
+              className="w-full rounded-input border border-border bg-surface px-2.5 py-1.5 text-sm text-text-primary outline-none focus:border-royal-500 focus:ring-2 focus:ring-royal-100"
+            />
+          </label>
+        )}
+
+        {error && <p className="mt-2 text-xs text-error">{error}</p>}
+
+        <div className="mt-5 flex justify-end gap-2">
+          <button onClick={onClose} className="rounded-input px-3.5 py-2 text-sm font-medium text-text-secondary hover:text-text-primary">
+            Cancelar
+          </button>
+          <button
+            onClick={submit}
+            disabled={submitting || !outcome || (outcome === "cancelled" && !note.trim())}
+            className="rounded-input bg-royal-600 px-3.5 py-2 text-sm font-semibold text-white transition-colors hover:bg-royal-700 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {submitting ? "Cerrando…" : "Confirmar"}
+          </button>
+        </div>
       </div>
     </div>
   );
