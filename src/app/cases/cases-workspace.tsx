@@ -255,6 +255,17 @@ function RequirementRow({ r }: { r: RequirementView }) {
               Rechazar
             </button>
           </div>
+        ) : r.state === "approved" && r.documentId ? (
+          <div className="flex items-center gap-2">
+            <button
+              onClick={view}
+              disabled={busy !== null}
+              className="rounded-input border border-border bg-surface px-2.5 py-1 text-xs font-medium text-text-primary transition-colors hover:bg-app-bg disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {busy === "view" ? "Abriendo…" : "Ver documento"}
+            </button>
+            <span className={`text-xs font-medium ${m.fg}`}>{m.label}</span>
+          </div>
         ) : (
           <span className={`text-xs font-medium ${m.fg}`}>{m.label}</span>
         )}
@@ -339,6 +350,12 @@ function CaseDetail({ c }: { c: CaseView }) {
           {reminderMessage && <p className="mt-1 text-xs text-text-secondary">{reminderMessage}</p>}
         </div>
         <div className="flex items-center gap-2">
+          <a
+            href={`/cases/${c.id}/documents-zip`}
+            className="rounded-input border border-border bg-surface px-3.5 py-2 text-sm font-medium text-text-primary transition-colors hover:bg-app-bg"
+          >
+            Descargar todo
+          </a>
           <button
             onClick={remind}
             disabled={reminding}

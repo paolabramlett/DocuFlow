@@ -106,6 +106,56 @@ export async function createDocumentDownloadUrl(
   return data.signedUrl;
 }
 
+export interface CaseDocumentForDownload {
+  readonly documentId: string;
+  readonly storagePath: string;
+  readonly fileName: string;
+  readonly participantName: string;
+  readonly requirementLabel: string;
+}
+
+/**
+ * The latest Document for every participant Requirement in a Case, for the "Descargar todo" batch
+ * export. Runs as the caller's own client, so RLS scopes it to the caller's Organization exactly
+ * like every other read here — a staff member never sees another Organization's Case this way.
+ */
+export async function getCaseDocumentsForDownload(
+  client: DbClient,
+  caseId: string,
+): Promise<CaseDocumentForDownload[]> {
+  const { data, error } = await client
+    .from('case_participants')
+    .select(
+      `client:clients(full_name),
+       requirements(id, label, deleted_at, superseded_at,
+         documents(id, storage_path, file_name, created_at))`,
+    )
+    .eq('case_id', caseId);
+
+  if (error) throw new Error(`Could not read case documents: ${error.message}`);
+
+  const results: CaseDocumentForDownload[] = [];
+  for (const participant of data ?? []) {
+    const participantName = participant.client?.full_name ?? 'Sin participante';
+    for (const requirement of participant.requirements ?? []) {
+      if (requirement.deleted_at || requirement.superseded_at) continue;
+      const latestDocument = [...requirement.documents].sort(
+        (a, b) => Date.parse(b.created_at) - Date.parse(a.created_at),
+      )[0];
+      if (!latestDocument) continue;
+
+      results.push({
+        documentId: latestDocument.id,
+        storagePath: latestDocument.storage_path,
+        fileName: latestDocument.file_name,
+        participantName,
+        requirementLabel: requirement.label,
+      });
+    }
+  }
+  return results;
+}
+
 /**
  * Records an approve or reject decision.
  *

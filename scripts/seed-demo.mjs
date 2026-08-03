@@ -25,6 +25,11 @@ if (!URL || !SERVICE) {
 
 const STAFF_EMAIL = "staff@docuflow.mx";
 const STAFF_PASSWORD = "docuflow-demo-2026";
+/** Must match CASE_DOCUMENTS_BUCKET in src/lib/storage/paths.ts. */
+const CASE_DOCUMENTS_BUCKET = "case-documents";
+/** Placeholder bytes so createSignedUrl() has a real object to sign — Ver/Descargar fail on a
+ *  documents row whose storage_path was never actually uploaded. */
+const PLACEHOLDER_PDF_BYTES = Buffer.from("%PDF-1.4 seed placeholder document");
 
 const admin = createClient(URL, SERVICE, { auth: { persistSession: false, autoRefreshToken: false } });
 
@@ -209,14 +214,20 @@ async function main() {
 
         // Give review/rejected states a document, and rejected ones a review with a reason.
         if (r.state === "review" || r.state === "rejected" || r.state === "approved") {
+          const storagePath = `${org.id}/cases/${c.id}/requirements/${req.id}/${crypto.randomUUID()}`;
+          const { error: uploadError } = await admin.storage
+            .from(CASE_DOCUMENTS_BUCKET)
+            .upload(storagePath, PLACEHOLDER_PDF_BYTES, { contentType: "application/pdf" });
+          must(`upload document (${r.label})`, uploadError);
+
           const doc = await insert("documents", {
             organization_id: org.id,
             case_id: c.id,
             requirement_id: req.id,
-            storage_path: `${org.id}/cases/${c.id}/requirements/${req.id}/${crypto.randomUUID()}`,
+            storage_path: storagePath,
             file_name: r.fileName ?? "documento.pdf",
             content_type: "application/pdf",
-            size_bytes: 2048,
+            size_bytes: PLACEHOLDER_PDF_BYTES.byteLength,
           });
           if (r.state === "rejected") {
             await insert("reviews", {
