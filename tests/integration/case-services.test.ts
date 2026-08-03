@@ -8,11 +8,11 @@ import {
 } from '../helpers/fixtures';
 import {
   addRequirement,
+  closeCase,
   createCase,
   deleteRequirement,
   renameRequirement,
   reorderRequirements,
-  setCaseState,
 } from '@/features/cases/cases';
 import {
   OrganizationAccessError,
@@ -51,8 +51,14 @@ describe('case services', () => {
         },
         world.staff.userId,
       );
-
-      await setCaseState(world.staff.client, caseId, 'completed', world.staff.userId);
+      await addRequirement(
+        world.staff.client,
+        { organizationId: world.organizationId, caseId, label: 'Sign', position: 0 },
+        world.staff.userId,
+      );
+      // closeCase requires documentation complete for 'completed' — but this test only checks
+      // that a state change is audited, so 'cancelled' (always allowed) is the simpler path here.
+      await closeCase(world.staff.client, caseId, 'cancelled', 'Cierre de prueba de auditoría');
 
       expect(await auditActions(caseId)).toEqual(
         expect.arrayContaining(['case.created', 'case.state_changed']),

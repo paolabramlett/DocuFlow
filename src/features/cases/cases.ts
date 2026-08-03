@@ -1,8 +1,13 @@
-import type { SupabaseClient } from '@supabase/supabase-js';
+import type { SupabaseClient, PostgrestError } from '@supabase/supabase-js';
 import { z } from 'zod';
 import type { Database } from '@/types/database';
 import { parseInput } from '@/lib/validation/parse';
 import { recordAuditEvent } from '@/features/audit/record';
+import { UseCaseError } from '@/application/errors';
+import { reissueParticipantInvitation } from '@/features/case-access/invitations';
+import { sendTransactionalEmail, type SendTransactionalEmailInput } from '@/lib/email/resend';
+import { escapeHtml } from '@/lib/email/escape-html';
+import { APP_ORIGIN } from '@/lib/supabase/env';
 
 type DbClient = SupabaseClient<Database>;
 
@@ -12,8 +17,6 @@ export const createCaseSchema = z.object({
   title: z.string().trim().min(1).max(300),
   blueprintId: z.string().uuid().optional(),
 });
-
-export const caseStateSchema = z.enum(['open', 'completed', 'cancelled']);
 
 export const addRequirementSchema = z.object({
   organizationId: z.string().uuid(),
@@ -82,48 +85,177 @@ export async function createCase(
   return caseId;
 }
 
-/**
- * Moves a Case through its lifecycle.
- *
- * Completing a Case also downgrades its active grants to view for the Organization's retention
- * window — done by a database trigger, so it happens however the state was changed.
- */
-export async function setCaseState(
+const CLOSE_CASE_MESSAGES: Record<string, string> = {
+  invalid_outcome: 'Resultado de cierre no válido.',
+  case_not_found: 'El expediente ya no existe.',
+  case_not_open: 'Este expediente ya no está abierto.',
+  documentation_incomplete: 'No se puede marcar como completado: aún hay documentación pendiente.',
+  cancellation_note_required: 'Escribe el motivo de cancelación que verá el cliente.',
+  not_authorized: 'No tienes permiso para cerrar este expediente.',
+};
+
+function mapCloseCaseError(error: PostgrestError): UseCaseError {
+  const message = CLOSE_CASE_MESSAGES[error.message];
+  if (!message) return new UseCaseError('unexpected', 'No pudimos cerrar el expediente. Intenta de nuevo.');
+  const reason =
+    error.message === 'documentation_incomplete' || error.message === 'cancellation_note_required'
+      ? 'validation'
+      : error.message === 'not_authorized'
+        ? 'forbidden'
+        : 'conflict';
+  return new UseCaseError(reason, message);
+}
+
+const REOPEN_CASE_MESSAGES: Record<string, string> = {
+  case_not_found: 'El expediente ya no existe.',
+  case_not_terminal: 'Este expediente no está cerrado.',
+  not_authorized: 'No tienes permiso para reabrir este expediente.',
+};
+
+function mapReopenCaseError(error: PostgrestError): UseCaseError {
+  const message = REOPEN_CASE_MESSAGES[error.message];
+  if (!message) return new UseCaseError('unexpected', 'No pudimos reabrir el expediente. Intenta de nuevo.');
+  const reason =
+    error.message === 'case_not_found' ? 'not_found' : error.message === 'not_authorized' ? 'forbidden' : 'conflict';
+  return new UseCaseError(reason, message);
+}
+
+interface CaseAndOrgName {
+  readonly title: string;
+  readonly organizationName: string;
+}
+
+async function readCaseAndOrgName(client: DbClient, caseId: string): Promise<CaseAndOrgName> {
+  const { data } = await client
+    .from('cases')
+    .select('title, organization:organizations(name)')
+    .eq('id', caseId)
+    .single();
+  return { title: data?.title ?? '', organizationName: data?.organization?.name ?? 'Avanza' };
+}
+
+/** One row per Participant with an active grant on this Case, deduplicated — never one per grant
+ *  row, matching the exact rationale in reopen_case's own contract (Task 3). */
+async function activeGrantParticipants(
   client: DbClient,
   caseId: string,
-  state: z.infer<typeof caseStateSchema>,
-  actorAuthUserId: string,
+): Promise<{ participantId: string; invitedEmail: string }[]> {
+  const { data } = await client
+    .from('case_access_grants')
+    .select('participant_id, invited_email, revoked_at, permission')
+    .eq('case_id', caseId);
+
+  const seen = new Set<string>();
+  const result: { participantId: string; invitedEmail: string }[] = [];
+  for (const g of data ?? []) {
+    if (g.revoked_at !== null || g.permission === 'none') continue;
+    if (seen.has(g.participant_id)) continue;
+    seen.add(g.participant_id);
+    result.push({ participantId: g.participant_id, invitedEmail: g.invited_email });
+  }
+  return result;
+}
+
+async function notifyParticipantsOfClosure(
+  client: DbClient,
+  caseId: string,
+  outcome: 'completed' | 'cancelled',
+  closingNote: string | undefined,
+  sendEmail: (input: SendTransactionalEmailInput) => Promise<void> = sendTransactionalEmail,
 ): Promise<void> {
-  const nextState = parseInput(caseStateSchema, state);
+  try {
+    const { title, organizationName } = await readCaseAndOrgName(client, caseId);
+    const participants = await activeGrantParticipants(client, caseId);
+    const safeTitle = escapeHtml(title);
+    const noteHtml = closingNote
+      ? `<p><strong>Motivo:</strong> ${escapeHtml(closingNote)}</p>`
+      : '';
+    const heading = outcome === 'completed' ? 'Expediente completado' : 'Expediente cancelado';
+    const body =
+      outcome === 'completed'
+        ? `Tu expediente <strong>${safeTitle}</strong> fue completado. Toda tu documentación requerida fue aprobada.`
+        : `Tu expediente <strong>${safeTitle}</strong> fue cancelado.`;
 
-  const { data: before, error: readError } = await client
-    .from('cases')
-    .select('organization_id, state')
-    .eq('id', caseId)
-    .maybeSingle();
+    for (const p of participants) {
+      await sendEmail({
+        to: p.invitedEmail,
+        subject: `${heading} — ${organizationName}`,
+        html: `<h2>${heading}</h2>\n<p>${body}</p>\n${noteHtml}`,
+        idempotencyKey: `case-closure/${caseId}/${p.participantId}/${outcome}`,
+      });
+    }
+  } catch (cause) {
+    console.error('Failed to notify participants of case closure', { caseId, outcome, cause });
+  }
+}
 
-  if (readError) throw new Error(`Could not read case: ${readError.message}`);
-  if (!before) throw new Error('No such case');
+async function notifyParticipantsOfReopening(
+  client: DbClient,
+  caseId: string,
+  restoredParticipantIds: string[],
+  sendEmail: (input: SendTransactionalEmailInput) => Promise<void> = sendTransactionalEmail,
+): Promise<void> {
+  try {
+    const { title, organizationName } = await readCaseAndOrgName(client, caseId);
+    const safeTitle = escapeHtml(title);
+    for (const participantId of restoredParticipantIds) {
+      // One reissue per restored Participant, never per grant row — a second reissue for the same
+      // Participant would invalidate the token this same loop just minted for them.
+      const reissued = await reissueParticipantInvitation(client, participantId);
+      await sendEmail({
+        to: reissued.invitedEmail,
+        subject: `Tu expediente fue reabierto — ${organizationName}`,
+        html: `<h2>Tu expediente fue reabierto</h2>\n<p>Puedes volver a <strong>${safeTitle}</strong> para continuar.</p>\n<p><a href="${APP_ORIGIN}/portal/${reissued.token}">Ir a mi expediente</a></p>`,
+        idempotencyKey: `case-reopen/${caseId}/${participantId}/${Date.now()}`,
+      });
+    }
+  } catch (cause) {
+    console.error('Failed to notify participants of case reopening', { caseId, cause });
+  }
+}
 
-  const { error } = await client
-    .from('cases')
-    .update({
-      state: nextState,
-      completed_at: nextState === 'completed' ? new Date().toISOString() : null,
-    })
-    .eq('id', caseId);
-
-  if (error) throw new Error(`Could not change case state: ${error.message}`);
-
-  await recordAuditEvent(client, {
-    organizationId: before.organization_id,
-    caseId,
-    action: 'case.state_changed',
-    targetType: 'case',
-    targetId: caseId,
-    actor: { kind: 'member', authUserId: actorAuthUserId },
-    metadata: { from: before.state, to: nextState },
+/**
+ * Closes a Case as completed (documentation fully approved) or cancelled (any time, with a
+ * client-visible note). All validation and the state change happen atomically inside the
+ * close_case RPC (Task 2) — this function only calls it and, on success, sends a best-effort
+ * notification. Never calls recordAuditEvent: the audit event is already written, atomically,
+ * inside the RPC itself.
+ */
+export async function closeCase(
+  client: DbClient,
+  caseId: string,
+  outcome: 'completed' | 'cancelled',
+  closingNote: string | undefined,
+): Promise<void> {
+  const { error } = await client.rpc('close_case', {
+    p_case_id: caseId,
+    p_outcome: outcome,
+    p_closing_note: closingNote,
   });
+  if (error) throw mapCloseCaseError(error);
+
+  await notifyParticipantsOfClosure(client, caseId, outcome, closingNote);
+}
+
+/**
+ * Reopens a closed Case. Ordering invariant: `reopen_case` is awaited (its transaction has
+ * already committed) BEFORE any Portal token is reissued or any email sent — a fresh link is
+ * never minted ahead of, or independently of, a successful reopen.
+ */
+export async function reopenCase(
+  client: DbClient,
+  caseId: string,
+): Promise<{ restoredParticipantIds: string[]; requiresReinvitation: boolean }> {
+  const { data, error } = await client.rpc('reopen_case', { p_case_id: caseId });
+  if (error) throw mapReopenCaseError(error);
+
+  const restoredParticipantIds = (data ?? []).map((r) => r.participant_id);
+
+  if (restoredParticipantIds.length > 0) {
+    await notifyParticipantsOfReopening(client, caseId, restoredParticipantIds);
+  }
+
+  return { restoredParticipantIds, requiresReinvitation: restoredParticipantIds.length === 0 };
 }
 
 export async function addRequirement(

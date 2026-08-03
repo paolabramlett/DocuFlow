@@ -142,7 +142,7 @@ describe('client reminders — due selection', () => {
 
       await world.staff.client
         .from('cases')
-        .update({ state: 'completed', completed_at: new Date().toISOString() })
+        .update({ state: 'completed', closed_at: new Date().toISOString() })
         .eq('id', world.caseId);
 
       expect(await selectDueFor(world.caseId)).toEqual([]);

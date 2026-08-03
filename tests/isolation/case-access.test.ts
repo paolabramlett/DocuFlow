@@ -169,7 +169,7 @@ describe('case access grants', () => {
 
       await world.staff.client
         .from('cases')
-        .update({ state: 'completed', completed_at: new Date().toISOString() })
+        .update({ state: 'completed', closed_at: new Date().toISOString() })
         .eq('id', world.caseId);
 
       const { data: grant } = await adminClient()
@@ -197,7 +197,7 @@ describe('case access grants', () => {
 
       await world.staff.client
         .from('cases')
-        .update({ state: 'completed', completed_at: new Date().toISOString() })
+        .update({ state: 'completed', closed_at: new Date().toISOString() })
         .eq('id', world.caseId);
 
       const { data: grant } = await adminClient()
@@ -219,7 +219,7 @@ describe('case access grants', () => {
 
       await world.staff.client
         .from('cases')
-        .update({ state: 'completed', completed_at: new Date().toISOString() })
+        .update({ state: 'completed', closed_at: new Date().toISOString() })
         .eq('id', world.caseId);
 
       const { error } = await granted.client.from('documents').insert({
