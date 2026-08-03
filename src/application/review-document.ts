@@ -6,6 +6,7 @@ import { ValidationError, parseInput } from "@/lib/validation/parse";
 import { decideReview } from "@/features/documents/documents";
 import { reissueParticipantInvitation } from "@/features/case-access/invitations";
 import { sendTransactionalEmail, type SendTransactionalEmailInput } from "@/lib/email/resend";
+import { escapeHtml } from "@/lib/email/escape-html";
 import { APP_ORIGIN } from "@/lib/supabase/env";
 
 type DbClient = SupabaseClient<Database>;
@@ -143,15 +144,16 @@ async function notifyParticipantActionRequired(
 
   const reissued = await reissueParticipantInvitation(client, participantId);
   const count = actionableCount ?? 1;
+  const safeCaseTitle = escapeHtml(caseTitle);
   const summary =
     count > 1
-      ? `Tienes ${count} documentos que requieren tu atención en ${caseTitle}.`
-      : `Tu documento <strong>${document.requirement.label}</strong> necesita corrección en ${caseTitle}.`;
+      ? `Tienes ${count} documentos que requieren tu atención en ${safeCaseTitle}.`
+      : `Tu documento <strong>${escapeHtml(document.requirement.label)}</strong> necesita corrección en ${safeCaseTitle}.`;
 
   await sendEmail({
     to: grant.invited_email,
     subject: `Acción requerida — ${organizationName}`,
-    html: `<h2>Necesitamos que revises algo</h2>\n<p>${summary}</p>\n<p><strong>Motivo:</strong> ${reason}</p>\n<p><a href="${APP_ORIGIN}/portal/${reissued.token}">Ir a mi expediente</a></p>`,
+    html: `<h2>Necesitamos que revises algo</h2>\n<p>${summary}</p>\n<p><strong>Motivo:</strong> ${escapeHtml(reason)}</p>\n<p><a href="${APP_ORIGIN}/portal/${reissued.token}">Ir a mi expediente</a></p>`,
     idempotencyKey: `review-action-required/${grant.id}/${Date.now()}`,
   });
 

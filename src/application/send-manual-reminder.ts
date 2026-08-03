@@ -5,6 +5,7 @@ import { UseCaseError } from "./errors";
 import { logDomainEvent } from "./events";
 import { reissueParticipantInvitation } from "@/features/case-access/invitations";
 import { sendTransactionalEmail, type SendTransactionalEmailInput } from "@/lib/email/resend";
+import { escapeHtml } from "@/lib/email/escape-html";
 import { APP_ORIGIN } from "@/lib/supabase/env";
 
 type DbClient = SupabaseClient<Database>;
@@ -85,7 +86,7 @@ export async function sendManualReminder(
       await sendEmail({
         to: reissued.invitedEmail,
         subject: `Recordatorio: te esperan en ${organizationName}`,
-        html: `<h2>Aún necesitamos algunos documentos tuyos</h2>\n<p>${organizationName} está esperando información para continuar con tu expediente. Usa el siguiente enlace:</p>\n<p><a href="${APP_ORIGIN}/portal/${reissued.token}">Ir a mi expediente</a></p>`,
+        html: `<h2>Aún necesitamos algunos documentos tuyos</h2>\n<p>${escapeHtml(organizationName)} está esperando información para continuar con tu expediente. Usa el siguiente enlace:</p>\n<p><a href="${APP_ORIGIN}/portal/${reissued.token}">Ir a mi expediente</a></p>`,
         idempotencyKey: `case-reminder-manual/${caseId}/${p.id}/${Date.now()}`,
       });
       remindedCount += 1;

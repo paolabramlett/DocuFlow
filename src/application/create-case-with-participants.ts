@@ -9,6 +9,7 @@ import { createParticipant, findOrCreateClient } from "@/features/participants/p
 import { issueInvitation } from "@/features/case-access/invitations";
 import { getBlueprintDefinition, type BlueprintDefinition } from "@/features/blueprints/queries";
 import { sendTransactionalEmail, type SendTransactionalEmailInput } from "@/lib/email/resend";
+import { escapeHtml } from "@/lib/email/escape-html";
 import { APP_ORIGIN } from "@/lib/supabase/env";
 
 type DbClient = SupabaseClient<Database>;
@@ -252,7 +253,7 @@ export async function createCaseWithParticipants(
         await sendEmail({
           to: p.email,
           subject: `Te invitaron a completar tu expediente — ${organizationName}`,
-          html: `<h2>Te invitaron a completar tu expediente</h2>\n<p>${organizationName} te invitó a completar información en Avanza. Usa el siguiente enlace para continuar:</p>\n<p><a href="${APP_ORIGIN}/portal/${token}">Ir a mi expediente</a></p>\n<p>No necesitas crear una cuenta — solo abre el enlace y sigue las instrucciones.</p>`,
+          html: `<h2>Te invitaron a completar tu expediente</h2>\n<p>${escapeHtml(organizationName)} te invitó a completar información en Avanza. Usa el siguiente enlace para continuar:</p>\n<p><a href="${APP_ORIGIN}/portal/${token}">Ir a mi expediente</a></p>\n<p>No necesitas crear una cuenta — solo abre el enlace y sigue las instrucciones.</p>`,
           idempotencyKey: `case-invitation/${caseId}/${participantId}`,
         });
         invited = true;
