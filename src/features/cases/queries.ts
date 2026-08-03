@@ -176,7 +176,7 @@ export async function getOperativeCounts(
   const startOfTodayUtc = zonedDayBoundaryToUtc(now, "America/Mexico_City", 0);
   const startOfTomorrowUtc = zonedDayBoundaryToUtc(now, "America/Mexico_City", 1);
 
-  const { count } = await client
+  const { count, error } = await client
     .from("cases")
     .select("id", { count: "exact", head: true })
     .eq("organization_id", organizationId)
@@ -184,5 +184,6 @@ export async function getOperativeCounts(
     .gte("closed_at", startOfTodayUtc.toISOString())
     .lt("closed_at", startOfTomorrowUtc.toISOString());
 
+  if (error) throw new Error(`getOperativeCounts: ${error.message}`);
   return { waitingClient, needsReview, readyToContinue, completedToday: count ?? 0 };
 }
