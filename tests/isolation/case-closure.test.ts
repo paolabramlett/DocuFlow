@@ -268,7 +268,38 @@ describe('close_case', () => {
     expect(error?.message).toBe('not_authorized');
   });
 
-  it('serializes two concurrent close_case calls on the same Case — exactly one succeeds', async () => {
+  it('a concurrent close_case call blocks on the row lock held by another transaction, and re-checks state once released', async () => {
+    const world = await buildOrganizationWorld({
+      name: 'Notaría Close Concurrent Lock',
+      industry: 'notary',
+      clientEmail: `close-concurrent-lock-${randomUUID()}@example.test`,
+    });
+    await makeCaseFullyApproved(world);
+
+    await withDb(async (holder) => {
+      await holder.query('begin');
+      await holder.query('select * from public.cases where id = $1 for update', [world.caseId]);
+
+      // A concurrent close_case call must now block behind the lock this connection holds.
+      let resolved = false;
+      const rpcPromise = world.staff.client
+        .rpc('close_case', { p_case_id: world.caseId, p_outcome: 'completed' })
+        .then((result) => {
+          resolved = true;
+          return result;
+        });
+
+      await new Promise((r) => setTimeout(r, 300));
+      expect(resolved).toBe(false); // still blocked — proves FOR UPDATE actually serializes here
+
+      await holder.query('commit'); // release the lock
+      const result = await rpcPromise;
+      expect(result.error).toBeNull();
+      expect(result.data?.state).toBe('completed');
+    });
+  });
+
+  it('two genuinely concurrent close_case calls on the same Case — exactly one succeeds, one gets case_not_open', async () => {
     const world = await buildOrganizationWorld({
       name: 'Notaría Close Concurrent',
       industry: 'notary',
