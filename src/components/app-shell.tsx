@@ -32,7 +32,7 @@ export function Sidebar({ active, account = DEFAULT_ACCOUNT }: { active: NavKey;
     <aside className="flex w-56 shrink-0 flex-col bg-royal-700 px-3 py-5 text-white">
       <div className="mb-8 flex items-center gap-2.5 px-2">
         {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img src="/img/LogoMark.png" alt="" className="size-8 rounded-input" />
+        <img src="/img/LogoMark-white.png" alt="" className="size-8 rounded-input" />
         <span className="text-[15px] font-semibold tracking-tight">Avanza</span>
       </div>
       <nav className="flex flex-col gap-1">
