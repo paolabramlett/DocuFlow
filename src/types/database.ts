@@ -1085,6 +1085,12 @@ export type Database = {
           user_id: string
         }[]
       }
+      reopen_case: {
+        Args: { p_case_id: string }
+        Returns: {
+          participant_id: string
+        }[]
+      }
       save_blueprint: {
         Args: {
           blueprint_description?: string
