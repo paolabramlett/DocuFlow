@@ -646,3 +646,78 @@ describe('reopen_case', () => {
     expect(events?.[0]?.metadata).toEqual({ from: 'completed', to: 'open' });
   });
 });
+
+describe('downgrade_grants_on_closure trigger', () => {
+  it('downgrades permission and captures permission_before_closure on completion', async () => {
+    const world = await buildOrganizationWorld({
+      name: 'Notaría Trigger Downgrade',
+      industry: 'notary',
+      clientEmail: `trigger-downgrade-${randomUUID()}@example.test`,
+    });
+    for (const id of world.requirementIds) {
+      await world.staff.client.from('requirements').update({ status: 'satisfied' }).eq('id', id);
+    }
+    const granted = await grantVerifiedAccess({ world, permission: 'upload' });
+
+    await world.staff.client.rpc('close_case', { p_case_id: world.caseId, p_outcome: 'completed' });
+
+    const { data } = await adminClient()
+      .from('case_access_grants')
+      .select('permission, permission_before_closure, expires_at')
+      .eq('id', granted.grantId)
+      .single();
+    expect(data?.permission).toBe('view');
+    expect(data?.permission_before_closure).toBe('upload');
+    expect(Date.parse(data!.expires_at!)).toBeGreaterThan(Date.now());
+  });
+
+  it('also fires on cancellation, not only completion', async () => {
+    const world = await buildOrganizationWorld({
+      name: 'Notaría Trigger Cancel',
+      industry: 'notary',
+      clientEmail: `trigger-cancel-${randomUUID()}@example.test`,
+    });
+    const granted = await grantVerifiedAccess({ world, permission: 'upload' });
+
+    await world.staff.client.rpc('close_case', {
+      p_case_id: world.caseId,
+      p_outcome: 'cancelled',
+      p_closing_note: 'Cancelado para probar el trigger.',
+    });
+
+    const { data } = await adminClient()
+      .from('case_access_grants')
+      .select('permission, permission_before_closure')
+      .eq('id', granted.grantId)
+      .single();
+    expect(data?.permission).toBe('view');
+    expect(data?.permission_before_closure).toBe('upload');
+  });
+
+  it('never downgrades an already-expired grant (would otherwise revive it)', async () => {
+    const world = await buildOrganizationWorld({
+      name: 'Notaría Trigger Expired',
+      industry: 'notary',
+      clientEmail: `trigger-expired-${randomUUID()}@example.test`,
+    });
+    for (const id of world.requirementIds) {
+      await world.staff.client.from('requirements').update({ status: 'satisfied' }).eq('id', id);
+    }
+    const granted = await grantVerifiedAccess({ world, permission: 'upload' });
+    const expiredAt = new Date(Date.now() - 1000).toISOString();
+    await adminClient().from('case_access_grants').update({ expires_at: expiredAt }).eq('id', granted.grantId);
+
+    await world.staff.client.rpc('close_case', { p_case_id: world.caseId, p_outcome: 'completed' });
+
+    const { data } = await adminClient()
+      .from('case_access_grants')
+      .select('permission, permission_before_closure, expires_at')
+      .eq('id', granted.grantId)
+      .single();
+    expect(data?.permission).toBe('upload'); // untouched
+    expect(data?.permission_before_closure).toBeNull(); // never captured
+    // Postgrest serializes timestamptz with a +00:00 offset rather than the "Z" suffix the JS
+    // Date used to build expiredAt, so compare by instant rather than exact string equality.
+    expect(Date.parse(data!.expires_at!)).toBe(Date.parse(expiredAt)); // untouched, not "revived" with a new date
+  });
+});
