@@ -456,6 +456,12 @@ describe('reopen_case', () => {
     await world.staff.client.rpc('close_case', { p_case_id: world.caseId, p_outcome: 'completed' });
     // Simulates Task 4's trigger — see the NOTE ON TASK ORDERING above this describe block's first test.
     await adminClient().from('case_access_grants').update({ permission_before_closure: 'upload' }).eq('id', granted.grantId);
+    const { data: preCheck } = await adminClient()
+      .from('case_access_grants')
+      .select('permission_before_closure')
+      .eq('id', granted.grantId)
+      .single();
+    expect(preCheck?.permission_before_closure).toBe('upload');
     // Force expiry after the downgrade already ran.
     await adminClient()
       .from('case_access_grants')
@@ -487,6 +493,12 @@ describe('reopen_case', () => {
     await world.staff.client.rpc('close_case', { p_case_id: world.caseId, p_outcome: 'completed' });
     // Simulates Task 4's trigger — see the NOTE ON TASK ORDERING above this describe block's first test.
     await adminClient().from('case_access_grants').update({ permission_before_closure: 'upload' }).eq('id', granted.grantId);
+    const { data: preCheck } = await adminClient()
+      .from('case_access_grants')
+      .select('permission_before_closure')
+      .eq('id', granted.grantId)
+      .single();
+    expect(preCheck?.permission_before_closure).toBe('upload');
     await adminClient().from('case_access_grants').update({ revoked_at: new Date().toISOString() }).eq('id', granted.grantId);
 
     const { data: restoredRows } = await world.staff.client.rpc('reopen_case', { p_case_id: world.caseId });
@@ -580,6 +592,19 @@ describe('reopen_case', () => {
     const { data: restoredRows } = await world.staff.client.rpc('reopen_case', { p_case_id: world.caseId });
     expect(restoredRows).toHaveLength(1);
     expect(restoredRows?.[0]?.participant_id).toBe(world.participantId);
+
+    const { data: firstAfter } = await adminClient()
+      .from('case_access_grants')
+      .select('permission, permission_before_closure')
+      .eq('id', first.grantId)
+      .single();
+    const { data: secondAfter } = await adminClient()
+      .from('case_access_grants')
+      .select('permission, permission_before_closure')
+      .eq('id', secondGrant!.id)
+      .single();
+    expect(firstAfter).toEqual(expect.objectContaining({ permission: 'upload', permission_before_closure: null }));
+    expect(secondAfter).toEqual(expect.objectContaining({ permission: 'upload', permission_before_closure: null }));
   });
 
   it('a granted Client cannot reopen a Case despite being able to SELECT it', async () => {
