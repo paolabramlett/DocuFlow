@@ -232,6 +232,7 @@ export type Database = {
           otp_locked_until: string | null
           participant_id: string
           permission: string
+          permission_before_closure: string | null
           revoked_at: string | null
           updated_at: string
           verified_at: string | null
@@ -255,6 +256,7 @@ export type Database = {
           otp_locked_until?: string | null
           participant_id: string
           permission?: string
+          permission_before_closure?: string | null
           revoked_at?: string | null
           updated_at?: string
           verified_at?: string | null
@@ -278,6 +280,7 @@ export type Database = {
           otp_locked_until?: string | null
           participant_id?: string
           permission?: string
+          permission_before_closure?: string | null
           revoked_at?: string | null
           updated_at?: string
           verified_at?: string | null
@@ -402,8 +405,10 @@ export type Database = {
       }
       cases: {
         Row: {
+          client_closing_note: string | null
           client_id: string
-          completed_at: string | null
+          closed_at: string | null
+          closed_by_auth_user_id: string | null
           created_at: string
           id: string
           organization_id: string
@@ -413,8 +418,10 @@ export type Database = {
           updated_at: string
         }
         Insert: {
+          client_closing_note?: string | null
           client_id: string
-          completed_at?: string | null
+          closed_at?: string | null
+          closed_by_auth_user_id?: string | null
           created_at?: string
           id?: string
           organization_id: string
@@ -424,8 +431,10 @@ export type Database = {
           updated_at?: string
         }
         Update: {
+          client_closing_note?: string | null
           client_id?: string
-          completed_at?: string | null
+          closed_at?: string | null
+          closed_by_auth_user_id?: string | null
           created_at?: string
           id?: string
           organization_id?: string
@@ -599,6 +608,7 @@ export type Database = {
         Row: {
           access_retention_days: number
           created_at: string
+          grant_reactivation_days: number
           id: string
           industry: string
           name: string
@@ -610,6 +620,7 @@ export type Database = {
         Insert: {
           access_retention_days?: number
           created_at?: string
+          grant_reactivation_days?: number
           id?: string
           industry: string
           name: string
@@ -621,6 +632,7 @@ export type Database = {
         Update: {
           access_retention_days?: number
           created_at?: string
+          grant_reactivation_days?: number
           id?: string
           industry?: string
           name?: string
