@@ -84,6 +84,7 @@ export async function registerDocument(
 export async function createDocumentDownloadUrl(
   client: DbClient,
   documentId: string,
+  options?: { download?: boolean },
 ): Promise<string> {
   const { data: document, error } = await client
     .from('documents')
@@ -96,7 +97,7 @@ export async function createDocumentDownloadUrl(
 
   const { data, error: signError } = await client.storage
     .from(CASE_DOCUMENTS_BUCKET)
-    .createSignedUrl(document.storage_path, SIGNED_URL_TTL_SECONDS);
+    .createSignedUrl(document.storage_path, SIGNED_URL_TTL_SECONDS, { download: options?.download });
 
   if (signError || !data) {
     throw new Error(`Could not sign document URL: ${signError?.message ?? 'refused'}`);

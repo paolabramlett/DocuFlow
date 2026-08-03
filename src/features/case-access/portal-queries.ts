@@ -22,6 +22,12 @@ export interface PortalRequirement {
   readonly label: string;
   readonly state: PortalReqState;
   readonly rejectionReason?: string;
+  /** The latest Document's id/name — present whenever one exists, regardless of state, so the
+   *  client can always see what they last submitted. Only 'approved' rows show it in the UI. */
+  readonly documentId?: string;
+  readonly fileName?: string;
+  /** Set only when `state === 'approved'`: the moment the approving review was recorded. */
+  readonly approvedAt?: string;
 }
 
 export interface PortalCase {
@@ -36,6 +42,8 @@ interface RawReview {
   created_at: string;
 }
 interface RawDocument {
+  id: string;
+  file_name: string;
   created_at: string;
   reviews: RawReview[];
 }
@@ -47,12 +55,30 @@ interface RawRequirement {
   documents: RawDocument[];
 }
 
-function deriveState(r: RawRequirement): { state: PortalReqState; rejectionReason?: string } {
-  if (r.status === 'satisfied') return { state: 'approved' };
+interface DerivedState {
+  state: PortalReqState;
+  rejectionReason?: string;
+  documentId?: string;
+  fileName?: string;
+  approvedAt?: string;
+}
 
+function deriveState(r: RawRequirement): DerivedState {
   const latestDocument = [...r.documents].sort(
     (a, b) => Date.parse(b.created_at) - Date.parse(a.created_at),
   )[0];
+  const docFields = latestDocument
+    ? { documentId: latestDocument.id, fileName: latestDocument.file_name }
+    : {};
+
+  if (r.status === 'satisfied') {
+    // Scoped to the latest Document's own reviews, same reasoning as the rejection case below —
+    // the approving review is the one on the Document that actually satisfied the Requirement.
+    const approvingReview = [...(latestDocument?.reviews ?? [])]
+      .filter((rev) => rev.decision === 'approved')
+      .sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at))[0];
+    return { state: 'approved', approvedAt: approvingReview?.created_at, ...docFields };
+  }
 
   // Scoped to the latest Document's own reviews — a rejected review on a superseded Document must
   // never keep outvoting a newer, not-yet-reviewed re-upload (that re-upload has no reviews at
@@ -62,9 +88,9 @@ function deriveState(r: RawRequirement): { state: PortalReqState; rejectionReaso
   )[0];
 
   if (latestReview?.decision === 'rejected') {
-    return { state: 'rejected', rejectionReason: latestReview.reason ?? undefined };
+    return { state: 'rejected', rejectionReason: latestReview.reason ?? undefined, ...docFields };
   }
-  if (r.documents.length > 0) return { state: 'review' };
+  if (r.documents.length > 0) return { state: 'review', ...docFields };
   return { state: 'pending' };
 }
 
@@ -82,7 +108,7 @@ export async function getPortalCase(client: DbClient, participantId: string): Pr
     .select(
       `case:cases(title, organization:organizations(name)),
        requirements(id, label, position, status, deleted_at, superseded_at,
-         documents(created_at, reviews(decision, reason, created_at)))`,
+         documents(id, file_name, created_at, reviews(decision, reason, created_at)))`,
     )
     .eq('id', participantId)
     .maybeSingle();
@@ -94,7 +120,15 @@ export async function getPortalCase(client: DbClient, participantId: string): Pr
     .filter((r) => !r.deleted_at && !r.superseded_at)
     .map((r) => {
       const derived = deriveState(r as RawRequirement);
-      return { id: r.id, label: r.label, state: derived.state, rejectionReason: derived.rejectionReason };
+      return {
+        id: r.id,
+        label: r.label,
+        state: derived.state,
+        rejectionReason: derived.rejectionReason,
+        documentId: derived.documentId,
+        fileName: derived.fileName,
+        approvedAt: derived.approvedAt,
+      };
     })
     .sort((a, b) => STATE_ORDER[a.state] - STATE_ORDER[b.state]);
 

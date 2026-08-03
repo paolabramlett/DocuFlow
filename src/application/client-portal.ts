@@ -13,7 +13,7 @@ import {
   type InvitationFailure,
 } from '@/features/case-access/invitations';
 import { getPortalCase, type PortalRequirement } from '@/features/case-access/portal-queries';
-import { registerDocument } from '@/features/documents/documents';
+import { createDocumentDownloadUrl, registerDocument } from '@/features/documents/documents';
 import { ALLOWED_CONTENT_TYPES, MAX_DOCUMENT_BYTES } from '@/features/documents/schemas';
 import { CASE_DOCUMENTS_BUCKET, documentObjectPath } from '@/lib/storage/paths';
 import { randomUUID } from 'node:crypto';
@@ -239,13 +239,20 @@ export async function uploadRequirementDocument(
 
   const { data: requirement, error: reqError } = await client
     .from('requirements')
-    .select('organization_id, case_id, participant_id')
+    .select('organization_id, case_id, participant_id, status')
     .eq('id', parsed.requirementId)
     .maybeSingle();
 
   if (reqError) throw new UseCaseError('unexpected', 'No pudimos leer ese requisito.');
   if (!requirement || requirement.participant_id !== grant.participantId) {
     throw new UseCaseError('not_found', 'Ese requisito ya no está disponible para ti.');
+  }
+  // An approved Requirement is read-only from the Portal — re-uploading would silently reopen a
+  // decision the client never sees change (deriveState in portal-queries.ts trusts `status` first,
+  // so the checklist would keep showing "Aprobado" while a brand-new, unreviewed Document sat
+  // underneath it). Reversing an approval is Staff's call, not a side effect of a client's upload.
+  if (requirement.status === 'satisfied') {
+    throw new UseCaseError('conflict', 'Este requisito ya fue aprobado y no se puede reemplazar.');
   }
 
   const documentId = randomUUID();
@@ -300,4 +307,60 @@ export async function uploadRequirementDocument(
     actor: { kind: 'client', authUserId: actorAuthUserId, grantId: grant.grantId },
     metadata: { replaced: true },
   });
+}
+
+// ------------------------------------------------------------------------------------------------
+// 8 · View/download a Document the client submitted themselves
+// ------------------------------------------------------------------------------------------------
+
+const documentUrlSchema = z.object({
+  token: z.string().min(1),
+  documentId: z.string().uuid(),
+});
+
+/**
+ * Signs a short-lived URL for one of the caller's own submitted Documents — reachable whether the
+ * underlying Requirement is still pending review or already approved (design.md: approved
+ * Documents stay visible, they just become read-only).
+ *
+ * Ownership is checked explicitly, the same defense-in-depth style as uploadRequirementDocument's
+ * own participant check: RLS on `documents`/`storage.objects` (granted_participant_ids) would
+ * refuse a cross-participant id on its own, but this call fails with a clear, dedicated message
+ * rather than a bare storage 404 if the id belongs to someone else's Requirement.
+ */
+export async function getClientDocumentUrl(
+  client: DbClient,
+  input: { token: string; documentId: string; download?: boolean },
+): Promise<string> {
+  let parsed;
+  try {
+    parsed = parseInput(documentUrlSchema, input);
+  } catch (error) {
+    if (error instanceof ValidationError) {
+      throw new UseCaseError('validation', 'Solicitud inválida.', error.issues);
+    }
+    throw error;
+  }
+
+  const grant = await resolveMyGrant(client, parsed.token);
+  if (!grant || !grant.isActive) {
+    throw new UseCaseError('forbidden', 'Tu acceso a este expediente ya no está disponible.');
+  }
+
+  const { data: document, error: documentError } = await client
+    .from('documents')
+    .select('requirement:requirements(participant_id)')
+    .eq('id', parsed.documentId)
+    .maybeSingle();
+
+  if (documentError) throw new UseCaseError('unexpected', 'No pudimos leer ese documento.');
+  if (!document?.requirement || document.requirement.participant_id !== grant.participantId) {
+    throw new UseCaseError('not_found', 'Ese documento ya no está disponible para ti.');
+  }
+
+  try {
+    return await createDocumentDownloadUrl(client, parsed.documentId, { download: input.download });
+  } catch {
+    throw new UseCaseError('unexpected', 'No pudimos generar el enlace. Intenta de nuevo.');
+  }
 }

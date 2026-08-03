@@ -59,7 +59,7 @@ export function CasesWorkspace({ cases, counts: op, account }: { cases: CaseView
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
           <Summary label="Esperando al cliente" value={op.waitingClient} tint="bg-warning" />
           <Summary label="Por revisar" value={op.needsReview} tint="bg-review" />
-          <Summary label="Listos para continuar" value={op.readyToContinue} tint="bg-success" />
+          <Summary label="Documentación completa" value={op.readyToContinue} tint="bg-success" />
           <Summary label="Completados hoy" value={op.completedToday} tint="bg-neutral" />
         </div>
 
@@ -119,7 +119,7 @@ function CaseRow({ c, selected, onSelect }: { c: CaseView; selected: boolean; on
       <div className="flex items-center justify-between gap-2">
         <span className="font-mono text-xs text-text-secondary tabular">{c.ref}</span>
         {done ? (
-          <span className="inline-flex items-center gap-1 text-xs font-medium text-success"><IconCheck className="size-3.5" />Completo</span>
+          <span className="inline-flex items-center gap-1 text-xs font-medium text-success"><IconCheck className="size-3.5" />Documentación completa</span>
         ) : (
           <span className="text-xs font-medium text-text-secondary tabular">{approved}/{total}</span>
         )}
@@ -300,19 +300,6 @@ function CaseDetail({ c }: { c: CaseView }) {
   const [reminding, setReminding] = useState(false);
   const [reminderMessage, setReminderMessage] = useState<string | null>(null);
 
-  if (done) {
-    return (
-      <div className="flex h-full flex-col items-center justify-center px-6 py-16 text-center">
-        <div className="complete-check flex size-16 items-center justify-center rounded-full bg-success text-white"><IconCheck className="size-8" /></div>
-        <div className="complete-rise mt-6">
-          <div className="font-mono text-xs text-text-secondary tabular">{c.ref}</div>
-          <h2 className="mt-2 text-2xl font-semibold tracking-tight text-text-primary">Expediente completado</h2>
-          <p className="mx-auto mt-2 max-w-sm text-sm leading-relaxed text-text-secondary">Todos los documentos requeridos fueron aprobados. Este expediente está listo para el siguiente paso.</p>
-        </div>
-      </div>
-    );
-  }
-
   const segments = reqs;
   const firstReview = reqs.find((r) => r.state === "review");
 
@@ -370,6 +357,15 @@ function CaseDetail({ c }: { c: CaseView }) {
       </div>
 
       <div className="flex-1 overflow-y-auto px-7 py-6">
+        {done && (
+          <div className="mb-6 flex items-center gap-3 rounded-card border border-success/20 bg-success-bg/60 px-5 py-4">
+            <span className="flex size-9 shrink-0 items-center justify-center rounded-full bg-success text-white"><IconCheck className="size-4" /></span>
+            <div>
+              <div className="text-sm font-semibold text-text-primary">Documentación completa</div>
+              <p className="text-xs text-text-secondary">Todos los documentos requeridos fueron aprobados. El expediente sigue abierto hasta que lo marques como finalizado.</p>
+            </div>
+          </div>
+        )}
         <section>
           <div className="flex items-end justify-between">
             <span className="text-xs font-semibold uppercase tracking-wider text-text-secondary">Progreso del expediente</span>

@@ -11,6 +11,7 @@
 import { createClient } from "@/lib/supabase/server";
 import { fail, ok, type ActionResult } from "@/application/errors";
 import {
+  getClientDocumentUrl,
   getPortalState,
   requestAccessCode,
   uploadRequirementDocument,
@@ -84,6 +85,19 @@ export async function uploadRequirementDocumentAction(
     );
 
     return ok(null);
+  } catch (error) {
+    return fail(error);
+  }
+}
+
+export async function getClientDocumentUrlAction(
+  token: string,
+  documentId: string,
+  download?: boolean,
+): Promise<ActionResult<string>> {
+  try {
+    const supabase = await createClient();
+    return ok(await getClientDocumentUrl(supabase, { token, documentId, download }));
   } catch (error) {
     return fail(error);
   }

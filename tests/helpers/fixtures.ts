@@ -252,6 +252,15 @@ export async function grantVerifiedAccess(options: {
   /** Reuse an identity so one human can hold grants in several Organizations. */
   existingAuthUserId?: string;
   existingEmail?: string;
+  /**
+   * A plaintext token for the caller to keep and use later (e.g. against getClientDocumentUrl,
+   * which resolves the grant by token, not by session identity alone). Normal callers never need
+   * this — the real flow's token exists only in an email — but a test that needs to act "as this
+   * already-verified Client" via a Server Action-style call needs a token it actually holds.
+   * Defaults to a random one that's immediately discarded, exactly like the real flow's first
+   * invitation ever does.
+   */
+  token?: string;
 }): Promise<GrantedClient> {
   const admin = adminClient();
   const email = options.existingEmail ?? options.world.clientEmail;
@@ -290,7 +299,9 @@ export async function grantVerifiedAccess(options: {
       case_id: options.world.caseId,
       participant_id: participantId,
       invited_email: email,
-      invitation_token_hash: createHash('sha256').update(randomBytes(32)).digest('hex'),
+      invitation_token_hash: createHash('sha256')
+        .update(options.token ?? randomBytes(32).toString('hex'))
+        .digest('hex'),
       permission: options.permission ?? 'upload',
       auth_user_id: authUserId,
       verified_at: verifiedAt.toISOString(),

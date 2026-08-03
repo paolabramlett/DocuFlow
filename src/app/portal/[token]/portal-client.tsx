@@ -14,6 +14,7 @@ import type { FailureReason } from "@/application/errors";
 import type { InvitationLanding, PortalState } from "@/application/client-portal";
 import type { PortalRequirement } from "@/features/case-access/portal-queries";
 import {
+  getClientDocumentUrlAction,
   requestAccessCodeAction,
   uploadRequirementDocumentAction,
   verifyAccessCodeAction,
@@ -313,10 +314,13 @@ function OtpCard({
   );
 }
 
-// ---------- 4-8 · The checklist, pending first, with a quiet completion state ----------
+// ---------- 4-8 · The checklist, pending first, with a quiet completion banner ----------
 function Checklist({ token, state, onChanged }: { token: string; state: PortalState; onChanged: () => void }) {
   const pending = state.requirements.filter((r) => r.state === "pending" || r.state === "rejected");
   const resolved = state.requirements.filter((r) => r.state === "review" || r.state === "approved");
+  // A Participant with zero Requirements is not "done" — there was never anything to complete
+  // (design.md's documentation-complete rule: it requires at least one visible Requirement).
+  const documentationComplete = state.isComplete && state.requirements.length > 0;
 
   return (
     <div className="min-h-screen bg-app-bg">
@@ -336,8 +340,16 @@ function Checklist({ token, state, onChanged }: { token: string; state: PortalSt
         <div className="text-sm font-medium text-royal-600">{state.organizationName}</div>
         <h1 className="mt-1 text-2xl font-semibold tracking-tight text-text-primary">{state.caseTitle}</h1>
 
-        {state.isComplete ? (
-          <CompletionCard />
+        {documentationComplete ? (
+          <>
+            <CompletionBanner />
+            <h2 className="mb-3 mt-8 text-sm font-semibold text-text-primary">Tus documentos</h2>
+            <div className="space-y-3">
+              {resolved.map((r) => (
+                <RequirementCard key={r.id} token={token} r={r} onChanged={onChanged} />
+              ))}
+            </div>
+          </>
         ) : (
           <>
             {/* The counter is visible but quiet — never the hero (docs/CLIENT_PORTAL.md, rule 7). */}
@@ -371,15 +383,16 @@ function Checklist({ token, state, onChanged }: { token: string; state: PortalSt
   );
 }
 
-function CompletionCard() {
+function CompletionBanner() {
   return (
     <div className="complete-rise mt-6 rounded-card border border-success/20 bg-success-bg/60 p-6 text-center">
       <div className="complete-check mx-auto flex size-14 items-center justify-center rounded-full bg-success text-white">
         <IconCheck className="size-7" />
       </div>
-      <h2 className="mt-4 text-lg font-semibold text-text-primary">¡Enviaste todo!</h2>
+      <h2 className="mt-4 text-lg font-semibold text-text-primary">Documentación completa</h2>
       <p className="mx-auto mt-1 max-w-sm text-sm text-text-secondary">
-        La notaría revisará tu información y seguirá con tu expediente. Te avisaremos si necesitan algo más.
+        Todos tus documentos requeridos fueron aprobados. No necesitas realizar ninguna acción por el momento.
+        El equipo continuará con el proceso y te notificará si necesita algo más.
       </p>
     </div>
   );
@@ -400,6 +413,7 @@ function RequirementCard({
   const fileRef = useRef<HTMLInputElement | null>(null);
   const [busy, setBusy] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
+  const [docError, setDocError] = useState<string | null>(null);
 
   async function onFile(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
@@ -417,6 +431,21 @@ function RequirementCard({
     else setUploadError(result.message);
   }
 
+  async function openDocument(download: boolean) {
+    if (!r.documentId) return;
+    setDocError(null);
+    // Opened synchronously, before the await — see cases-workspace.tsx's "Ver documento" for why
+    // (a browser's popup blocker treats a post-await window.open as unrelated to the click).
+    const tab = window.open("", "_blank");
+    const result = await getClientDocumentUrlAction(token, r.documentId, download);
+    if (!result.ok) {
+      tab?.close();
+      setDocError(result.message);
+      return;
+    }
+    if (tab) tab.location.href = result.data;
+  }
+
   return (
     <div className={`overflow-hidden rounded-card border border-border bg-surface ${quiet ? "shadow-none" : "shadow-sm"}`}>
       <input ref={fileRef} type="file" accept=".pdf,.jpg,.jpeg,.png,.heic,.webp" className="hidden" onChange={onFile} />
@@ -431,6 +460,12 @@ function RequirementCard({
               <m.Icon className="size-3.5" /> {m.label}
             </span>
           </div>
+          {r.state === "approved" && r.fileName && (
+            <p className="mt-1 truncate text-xs text-text-secondary">
+              {r.approvedAt && `Aprobado el ${new Date(r.approvedAt).toLocaleDateString("es-MX", { day: "numeric", month: "short", year: "numeric" })} · `}
+              {r.fileName}
+            </p>
+          )}
         </div>
       </div>
 
@@ -461,7 +496,25 @@ function RequirementCard({
         </div>
       )}
 
+      {r.state === "approved" && r.documentId && (
+        <div className="flex gap-2 border-t border-border px-5 py-3">
+          <button
+            onClick={() => openDocument(false)}
+            className="flex-1 rounded-input border border-border px-3 py-2 text-xs font-medium text-text-primary transition-colors hover:bg-app-bg"
+          >
+            Ver
+          </button>
+          <button
+            onClick={() => openDocument(true)}
+            className="flex-1 rounded-input border border-border px-3 py-2 text-xs font-medium text-text-primary transition-colors hover:bg-app-bg"
+          >
+            Descargar
+          </button>
+        </div>
+      )}
+
       {uploadError && <p className="border-t border-border px-5 py-2 text-xs text-error">{uploadError}</p>}
+      {docError && <p className="border-t border-border px-5 py-2 text-xs text-error">{docError}</p>}
     </div>
   );
 }
