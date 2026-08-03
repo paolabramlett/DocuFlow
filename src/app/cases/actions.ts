@@ -24,6 +24,7 @@ import { reviewDocument, type ReviewDocumentInput } from "@/application/review-d
 import { createDocumentDownloadUrl } from "@/features/documents/documents";
 import { sendManualReminder, type SendManualReminderResult } from "@/application/send-manual-reminder";
 import { getBlueprintDefinition, type BlueprintDefinition } from "@/features/blueprints/queries";
+import { closeCase, reopenCase } from "@/features/cases/cases";
 
 export async function createCaseAction(
   input: Omit<CreateCaseWithParticipantsInput, "organizationId">,
@@ -114,6 +115,46 @@ export async function getBlueprintDefinitionAction(
     }
 
     return ok(definition);
+  } catch (error) {
+    return fail(error);
+  }
+}
+
+export async function closeCaseAction(
+  caseId: string,
+  outcome: "completed" | "cancelled",
+  closingNote?: string,
+): Promise<ActionResult<null>> {
+  try {
+    const staff = await getStaffContext();
+    if (!staff) {
+      return { ok: false, reason: "unauthenticated", message: "Tu sesión expiró. Inicia sesión de nuevo." };
+    }
+
+    const supabase = await createClient();
+    await closeCase(supabase, caseId, outcome, closingNote);
+
+    revalidatePath("/cases");
+    return ok(null);
+  } catch (error) {
+    return fail(error);
+  }
+}
+
+export async function reopenCaseAction(
+  caseId: string,
+): Promise<ActionResult<{ requiresReinvitation: boolean }>> {
+  try {
+    const staff = await getStaffContext();
+    if (!staff) {
+      return { ok: false, reason: "unauthenticated", message: "Tu sesión expiró. Inicia sesión de nuevo." };
+    }
+
+    const supabase = await createClient();
+    const { requiresReinvitation } = await reopenCase(supabase, caseId);
+
+    revalidatePath("/cases");
+    return ok({ requiresReinvitation });
   } catch (error) {
     return fail(error);
   }
