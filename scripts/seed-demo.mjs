@@ -187,7 +187,7 @@ async function main() {
       client_id: primaryClientId,
       title,
       state,
-      completed_at: state === "completed" ? new Date().toISOString() : null,
+      closed_at: state === "completed" ? new Date().toISOString() : null,
     });
 
     const createdParticipants = [];
