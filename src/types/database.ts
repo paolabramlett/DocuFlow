@@ -1027,6 +1027,28 @@ export type Database = {
         Args: { cooldown_seconds: number; signup_email: string }
         Returns: boolean
       }
+      close_case: {
+        Args: { p_case_id: string; p_closing_note?: string; p_outcome: string }
+        Returns: {
+          client_closing_note: string | null
+          client_id: string
+          closed_at: string | null
+          closed_by_auth_user_id: string | null
+          created_at: string
+          id: string
+          organization_id: string
+          origin_blueprint_id: string | null
+          state: string
+          title: string
+          updated_at: string
+        }
+        SetofOptions: {
+          from: "*"
+          to: "cases"
+          isOneToOne: true
+          isSetofReturn: false
+        }
+      }
       complete_onboarding: {
         Args: { organization_industry: string; organization_name: string }
         Returns: string
