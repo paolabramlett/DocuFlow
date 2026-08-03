@@ -143,7 +143,7 @@ export async function closeCaseAction(
 
 export async function reopenCaseAction(
   caseId: string,
-): Promise<ActionResult<{ requiresReinvitation: boolean }>> {
+): Promise<ActionResult<{ requiresReinvitation: boolean; notificationFailureCount: number }>> {
   try {
     const staff = await getStaffContext();
     if (!staff) {
@@ -151,10 +151,10 @@ export async function reopenCaseAction(
     }
 
     const supabase = await createClient();
-    const { requiresReinvitation } = await reopenCase(supabase, caseId);
+    const { requiresReinvitation, notificationFailureCount } = await reopenCase(supabase, caseId);
 
     revalidatePath("/cases");
-    return ok({ requiresReinvitation });
+    return ok({ requiresReinvitation, notificationFailureCount });
   } catch (error) {
     return fail(error);
   }

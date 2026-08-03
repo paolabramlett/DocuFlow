@@ -162,6 +162,7 @@ export async function getOperativeCounts(
   let needsReview = 0;
   let readyToContinue = 0;
   for (const c of cases) {
+    if (c.state !== "open") continue;
     const reqs = c.participants.flatMap((p) => p.requirements);
     if (reqs.some((r) => r.state === "review")) needsReview += 1;
     if (reqs.some((r) => r.state === "awaiting" || r.state === "missing" || r.state === "rejected")) waitingClient += 1;

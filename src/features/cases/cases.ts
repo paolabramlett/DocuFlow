@@ -135,20 +135,26 @@ async function readCaseAndOrgName(client: DbClient, caseId: string): Promise<Cas
 }
 
 /** One row per Participant with an active grant on this Case, deduplicated — never one per grant
- *  row, matching the exact rationale in reopen_case's own contract (Task 3). */
+ *  row, matching the exact rationale in reopen_case's own contract (Task 3). "Active" here matches
+ *  the canonical predicate used everywhere else in this codebase (app.granted_participant_ids, the
+ *  case-closure grant trigger, and reopen_case itself): verified, not revoked, and not expired —
+ *  not merely "not revoked and not permission 'none'". */
 async function activeGrantParticipants(
   client: DbClient,
   caseId: string,
 ): Promise<{ participantId: string; invitedEmail: string }[]> {
   const { data } = await client
     .from('case_access_grants')
-    .select('participant_id, invited_email, revoked_at, permission')
+    .select('participant_id, invited_email, revoked_at, permission, verified_at, expires_at')
     .eq('case_id', caseId);
 
+  const now = Date.now();
   const seen = new Set<string>();
   const result: { participantId: string; invitedEmail: string }[] = [];
   for (const g of data ?? []) {
     if (g.revoked_at !== null || g.permission === 'none') continue;
+    if (g.verified_at === null) continue;
+    if (g.expires_at === null || Date.parse(g.expires_at) <= now) continue;
     if (seen.has(g.participant_id)) continue;
     seen.add(g.participant_id);
     result.push({ participantId: g.participant_id, invitedEmail: g.invited_email });
@@ -181,7 +187,7 @@ async function notifyParticipantsOfClosure(
         to: p.invitedEmail,
         subject: `${heading} — ${organizationName}`,
         html: `<h2>${heading}</h2>\n<p>${body}</p>\n${noteHtml}`,
-        idempotencyKey: `case-closure/${caseId}/${p.participantId}/${outcome}`,
+        idempotencyKey: `case-closure/${caseId}/${p.participantId}/${outcome}/${Date.now()}`,
       });
     }
   } catch (cause) {
@@ -194,24 +200,37 @@ async function notifyParticipantsOfReopening(
   caseId: string,
   restoredParticipantIds: string[],
   sendEmail: (input: SendTransactionalEmailInput) => Promise<void> = sendTransactionalEmail,
-): Promise<void> {
+): Promise<number> {
+  let failureCount = 0;
   try {
     const { title, organizationName } = await readCaseAndOrgName(client, caseId);
     const safeTitle = escapeHtml(title);
     for (const participantId of restoredParticipantIds) {
-      // One reissue per restored Participant, never per grant row — a second reissue for the same
-      // Participant would invalidate the token this same loop just minted for them.
-      const reissued = await reissueParticipantInvitation(client, participantId);
-      await sendEmail({
-        to: reissued.invitedEmail,
-        subject: `Tu expediente fue reabierto — ${organizationName}`,
-        html: `<h2>Tu expediente fue reabierto</h2>\n<p>Puedes volver a <strong>${safeTitle}</strong> para continuar.</p>\n<p><a href="${APP_ORIGIN}/portal/${reissued.token}">Ir a mi expediente</a></p>`,
-        idempotencyKey: `case-reopen/${caseId}/${participantId}/${Date.now()}`,
-      });
+      // Each Participant's (reissue + send) pair gets its own try/catch — a failure for one
+      // Participant must never stop the loop from reaching the rest. Note reissuing rotates the
+      // token hash immediately (destroying the old link) before sendEmail runs, so a failure here
+      // means that Participant's old link is gone and the new one was never delivered; the caller
+      // surfaces failureCount so Staff can use "Recordar" to retry.
+      try {
+        // One reissue per restored Participant, never per grant row — a second reissue for the
+        // same Participant would invalidate the token this same loop just minted for them.
+        const reissued = await reissueParticipantInvitation(client, participantId);
+        await sendEmail({
+          to: reissued.invitedEmail,
+          subject: `Tu expediente fue reabierto — ${organizationName}`,
+          html: `<h2>Tu expediente fue reabierto</h2>\n<p>Puedes volver a <strong>${safeTitle}</strong> para continuar.</p>\n<p><a href="${APP_ORIGIN}/portal/${reissued.token}">Ir a mi expediente</a></p>`,
+          idempotencyKey: `case-reopen/${caseId}/${participantId}/${Date.now()}`,
+        });
+      } catch (cause) {
+        failureCount += 1;
+        console.error('Failed to notify a participant of case reopening', { caseId, participantId, cause });
+      }
     }
   } catch (cause) {
     console.error('Failed to notify participants of case reopening', { caseId, cause });
+    failureCount = restoredParticipantIds.length;
   }
+  return failureCount;
 }
 
 /**
@@ -245,17 +264,22 @@ export async function closeCase(
 export async function reopenCase(
   client: DbClient,
   caseId: string,
-): Promise<{ restoredParticipantIds: string[]; requiresReinvitation: boolean }> {
+): Promise<{ restoredParticipantIds: string[]; requiresReinvitation: boolean; notificationFailureCount: number }> {
   const { data, error } = await client.rpc('reopen_case', { p_case_id: caseId });
   if (error) throw mapReopenCaseError(error);
 
   const restoredParticipantIds = (data ?? []).map((r) => r.participant_id);
 
+  let notificationFailureCount = 0;
   if (restoredParticipantIds.length > 0) {
-    await notifyParticipantsOfReopening(client, caseId, restoredParticipantIds);
+    notificationFailureCount = await notifyParticipantsOfReopening(client, caseId, restoredParticipantIds);
   }
 
-  return { restoredParticipantIds, requiresReinvitation: restoredParticipantIds.length === 0 };
+  return {
+    restoredParticipantIds,
+    requiresReinvitation: restoredParticipantIds.length === 0,
+    notificationFailureCount,
+  };
 }
 
 export async function addRequirement(

@@ -72,7 +72,7 @@ describe('closeCase / reopenCase', () => {
 
     const result = await reopenCase(world.staff.client, world.caseId);
 
-    expect(result).toEqual({ restoredParticipantIds: [], requiresReinvitation: true });
+    expect(result).toEqual({ restoredParticipantIds: [], requiresReinvitation: true, notificationFailureCount: 0 });
     expect(sendEmail).not.toHaveBeenCalled();
   });
 

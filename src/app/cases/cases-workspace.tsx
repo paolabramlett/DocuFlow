@@ -132,7 +132,7 @@ function CaseRow({ c, selected, onSelect }: { c: CaseView; selected: boolean; on
   );
 }
 
-function ParticipantColumn({ p }: { p: ParticipantView }) {
+function ParticipantColumn({ p, caseOpen }: { p: ParticipantView; caseOpen: boolean }) {
   const c = counts(p.requirements);
   const pc = pct(p.requirements);
   return (
@@ -168,13 +168,13 @@ function ParticipantColumn({ p }: { p: ParticipantView }) {
         </div>
       </div>
       <ul className="flex-1">
-        {p.requirements.map((r) => <RequirementRow key={r.id} r={r} />)}
+        {p.requirements.map((r) => <RequirementRow key={r.id} r={r} caseOpen={caseOpen} />)}
       </ul>
     </div>
   );
 }
 
-function RequirementRow({ r }: { r: RequirementView }) {
+function RequirementRow({ r, caseOpen }: { r: RequirementView; caseOpen: boolean }) {
   const m = REQ[r.state];
   const [busy, setBusy] = useState<"approve" | "reject" | "view" | null>(null);
   const [rejecting, setRejecting] = useState(false);
@@ -231,7 +231,7 @@ function RequirementRow({ r }: { r: RequirementView }) {
       <div className="flex items-center gap-3">
         <span className={`flex size-6 shrink-0 items-center justify-center rounded-full ${m.bg} ${m.fg}`}><m.Icon className="size-3.5" /></span>
         <span className="flex-1 text-sm text-text-primary">{r.label}</span>
-        {r.state === "review" && r.documentId ? (
+        {r.state === "review" && r.documentId && caseOpen ? (
           <div className="flex items-center gap-1.5">
             <button
               onClick={view}
@@ -419,7 +419,7 @@ function CaseDetail({ c }: { c: CaseView }) {
         <section className="mt-8">
           <h3 className="mb-3 text-sm font-semibold text-text-primary">Participantes</h3>
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-            {c.participants.map((pt) => <ParticipantColumn key={pt.id} p={pt} />)}
+            {c.participants.map((pt) => <ParticipantColumn key={pt.id} p={pt} caseOpen={c.state === "open"} />)}
           </div>
         </section>
       </div>
@@ -455,6 +455,9 @@ function ClosureBanner({ c, onReopened }: { c: CaseView; onReopened: (msg: strin
     }
     if (result.data.requiresReinvitation) {
       onReopened("El cliente ya no tiene un enlace activo — usa Recordar para invitarlo de nuevo.");
+    } else if (result.data.notificationFailureCount > 0) {
+      const n = result.data.notificationFailureCount;
+      onReopened(`Se restauró el acceso, pero no pudimos notificar a ${n} participante${n === 1 ? "" : "s"} — usa Recordar.`);
     } else {
       onReopened(null);
     }
