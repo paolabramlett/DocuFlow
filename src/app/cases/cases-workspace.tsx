@@ -310,6 +310,7 @@ function CaseDetail({ c }: { c: CaseView }) {
   const done = k.total > 0 && k.approved === k.total;
   const [reminding, setReminding] = useState(false);
   const [reminderMessage, setReminderMessage] = useState<string | null>(null);
+  const [reopenMessage, setReopenMessage] = useState<string | null>(null);
   const [closing, setClosing] = useState(false);
 
   const segments = reqs;
@@ -349,6 +350,7 @@ function CaseDetail({ c }: { c: CaseView }) {
           <h2 className="mt-1 text-xl font-semibold tracking-tight text-text-primary">{c.title}</h2>
           <p className="mt-1 text-sm text-text-secondary">{c.participants.length} participante{c.participants.length > 1 ? "s" : ""} · abierto el {c.opened}</p>
           {reminderMessage && <p className="mt-1 text-xs text-text-secondary">{reminderMessage}</p>}
+          {reopenMessage && <p className="mt-1 text-xs text-text-secondary">{reopenMessage}</p>}
         </div>
         <div className="flex items-center gap-2">
           <a
@@ -394,7 +396,7 @@ function CaseDetail({ c }: { c: CaseView }) {
             </div>
           </div>
         )}
-        {c.state !== "open" && <ClosureBanner c={c} />}
+        {c.state !== "open" && <ClosureBanner c={c} onReopened={(msg: string | null) => setReopenMessage(msg)} />}
         <section>
           <div className="flex items-end justify-between">
             <span className="text-xs font-semibold uppercase tracking-wider text-text-secondary">Progreso del expediente</span>
@@ -427,10 +429,15 @@ function CaseDetail({ c }: { c: CaseView }) {
 }
 
 function formatClosedAt(iso: string): string {
-  return new Date(iso).toLocaleDateString("es-MX", { day: "numeric", month: "long", year: "numeric" });
+  return new Date(iso).toLocaleDateString("es-MX", {
+    day: "numeric",
+    month: "long",
+    year: "numeric",
+    timeZone: "America/Mexico_City",
+  });
 }
 
-function ClosureBanner({ c }: { c: CaseView }) {
+function ClosureBanner({ c, onReopened }: { c: CaseView; onReopened: (msg: string | null) => void }) {
   const [reopening, setReopening] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const router = useRouter();
@@ -439,6 +446,7 @@ function ClosureBanner({ c }: { c: CaseView }) {
   async function reopen() {
     setReopening(true);
     setMessage(null);
+    onReopened(null);
     const result = await reopenCaseAction(c.id);
     setReopening(false);
     if (!result.ok) {
@@ -446,7 +454,9 @@ function ClosureBanner({ c }: { c: CaseView }) {
       return;
     }
     if (result.data.requiresReinvitation) {
-      setMessage("El cliente ya no tiene un enlace activo — usa Recordar para invitarlo de nuevo.");
+      onReopened("El cliente ya no tiene un enlace activo — usa Recordar para invitarlo de nuevo.");
+    } else {
+      onReopened(null);
     }
     router.refresh();
   }
