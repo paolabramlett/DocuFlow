@@ -1,4 +1,9 @@
 import { createClient } from "@/lib/supabase/server";
+import type { SupabaseClient } from "@supabase/supabase-js";
+import type { Database } from "@/types/database";
+import { zonedDayBoundaryToUtc } from "@/lib/time/zoned-day-boundary";
+
+type DbClient = SupabaseClient<Database>;
 
 /**
  * Read models for the Cases workspace. Everything is fetched through RLS as the signed-in staff
@@ -148,7 +153,11 @@ export interface OperativeCounts {
   completedToday: number;
 }
 
-export async function getOperativeCounts(cases: CaseView[]): Promise<OperativeCounts> {
+export async function getOperativeCounts(
+  client: DbClient,
+  organizationId: string,
+  cases: CaseView[],
+): Promise<OperativeCounts> {
   let waitingClient = 0;
   let needsReview = 0;
   let readyToContinue = 0;
@@ -158,5 +167,22 @@ export async function getOperativeCounts(cases: CaseView[]): Promise<OperativeCo
     if (reqs.some((r) => r.state === "awaiting" || r.state === "missing" || r.state === "rejected")) waitingClient += 1;
     if (reqs.length > 0 && reqs.every((r) => r.state === "approved")) readyToContinue += 1;
   }
-  return { waitingClient, needsReview, readyToContinue, completedToday: 0 };
+
+  // A real database COUNT, not a client-side filter over every already-fetched Case — the day
+  // boundary is the only thing computed in TypeScript, using the real IANA timezone database
+  // (never a hardcoded offset). America/Mexico_City is a fixed, product-wide zone for this MVP,
+  // not per-organization — a deliberate, documented simplification.
+  const now = new Date();
+  const startOfTodayUtc = zonedDayBoundaryToUtc(now, "America/Mexico_City", 0);
+  const startOfTomorrowUtc = zonedDayBoundaryToUtc(now, "America/Mexico_City", 1);
+
+  const { count } = await client
+    .from("cases")
+    .select("id", { count: "exact", head: true })
+    .eq("organization_id", organizationId)
+    .eq("state", "completed")
+    .gte("closed_at", startOfTodayUtc.toISOString())
+    .lt("closed_at", startOfTomorrowUtc.toISOString());
+
+  return { waitingClient, needsReview, readyToContinue, completedToday: count ?? 0 };
 }

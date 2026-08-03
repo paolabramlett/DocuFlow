@@ -5,6 +5,7 @@
 
 import { requireStaff } from "@/features/auth/context";
 import { getOperativeCounts, getWorkspaceCases } from "@/features/cases/queries";
+import { createClient } from "@/lib/supabase/server";
 import { CasesWorkspace } from "./cases-workspace";
 
 export const dynamic = "force-dynamic";
@@ -12,7 +13,8 @@ export const dynamic = "force-dynamic";
 export default async function CasesPage() {
   const staff = await requireStaff();
   const cases = await getWorkspaceCases();
-  const counts = await getOperativeCounts(cases);
+  const supabase = await createClient();
+  const counts = await getOperativeCounts(supabase, staff.organizationId, cases);
 
   return (
     <CasesWorkspace
