@@ -39,6 +39,34 @@ This spec builds on top of that machinery rather than replacing it, but does rep
 
 ## Data model
 
+**Several migration files, applied in sequence — matching this repo's existing convention of one
+small, purpose-scoped file per change** (see `supabase/migrations/`: `20260722194111_...`,
+`20260723135130_...`, etc.), not one giant file. Supabase applies each numbered file as its own
+transaction, and Postgres DDL is transactional: within any single file, no other session can ever
+observe a partial state — the risk this section addresses is entirely about *cross-file* ordering,
+since files 2 and 3 depend on schema files 1 committing first. The required order:
+
+1. **Schema + backfill** (one file): rename `completed_at` → `closed_at`; backfill any pre-existing
+   `cancelled` row whose `closed_at` is still null (must happen before the coherence constraint
+   below, or that constraint rejects the migration outright on such a row); add the new columns
+   (`closed_by_auth_user_id`, `client_closing_note` on `cases`; `grant_reactivation_days` on
+   `organizations`; `permission_before_closure` on `case_access_grants`); add the new constraints
+   last, once the backfill and columns are in place.
+2. **`close_case`** (its own file — see the vertical-slice task order below): depends only on file 1.
+3. **`reopen_case`** (its own file): depends only on file 1 (not on file 2 — the two RPCs don't call
+   each other).
+4. **Trigger swap** (its own file, applied after 1-3): drop the old trigger and its function
+   (`cases_downgrade_grants_on_completion` / `app.downgrade_grants_on_completion`) and create the
+   new one (`cases_downgrade_grants_on_closure` / `app.downgrade_grants_on_closure`) — a true
+   rename, not an overload, since the function's own logic changes — within one file, so there is
+   never a moment with both or neither attached. Ordered last among the schema files only because
+   it's the one piece with production behavioral impact the instant it lands (every subsequent
+   `state → 'completed'`/`'cancelled'` transition, however it happens, now runs the corrected
+   downgrade logic); it has no actual column/RPC dependency on files 2-3.
+
+The application code (Server Actions, use cases) is deployed only after every migration file above
+has been applied — same as every other feature in this codebase, never interleaved with it.
+
 ### `cases` table
 
 - **Rename** `completed_at` → `closed_at` — it now marks entry into *either* terminal state, not
@@ -164,17 +192,17 @@ declare
   v_rows integer;
 begin
   if p_outcome not in ('completed', 'cancelled') then
-    raise exception 'close_case: invalid outcome %', p_outcome;
+    raise exception using errcode = 'P0001', message = 'invalid_outcome';
   end if;
 
   -- FOR UPDATE: holds the row lock for the rest of this transaction. A concurrent close_case (or
   -- reopen_case) on the same Case blocks here until this transaction ends.
   select * into v_case from public.cases where id = p_case_id for update;
   if not found then
-    raise exception 'close_case: no such case';
+    raise exception using errcode = 'P0001', message = 'case_not_found';
   end if;
   if v_case.state <> 'open' then
-    raise exception 'close_case: case is not open (state: %)', v_case.state;
+    raise exception using errcode = 'P0001', message = 'case_not_open';
   end if;
 
   if p_outcome = 'completed' then
@@ -198,11 +226,11 @@ begin
        and r.superseded_at is null;
 
     if v_visible_total = 0 or v_visible_outstanding > 0 then
-      raise exception 'close_case: documentation is not complete';
+      raise exception using errcode = 'P0001', message = 'documentation_incomplete';
     end if;
   else
     if nullif(btrim(p_closing_note), '') is null then
-      raise exception 'close_case: closing note is required to cancel';
+      raise exception using errcode = 'P0001', message = 'cancellation_note_required';
     end if;
   end if;
 
@@ -222,7 +250,7 @@ begin
     -- Reached only if RLS silently dropped the UPDATE (a Client can SELECT this row via a 'view'
     -- grant but never UPDATE it) — the FOR UPDATE lock plus the state check above already rule out
     -- a genuine concurrent-transition race reaching here. Must never look the same as "not found".
-    raise exception 'close_case: not authorized';
+    raise exception using errcode = 'P0001', message = 'not_authorized';
   end if;
 
   insert into public.audit_events (
@@ -273,10 +301,10 @@ declare
 begin
   select * into v_case from public.cases where id = p_case_id for update;
   if not found then
-    raise exception 'reopen_case: no such case';
+    raise exception using errcode = 'P0001', message = 'case_not_found';
   end if;
   if v_case.state not in ('completed', 'cancelled') then
-    raise exception 'reopen_case: case is not in a terminal state (state: %)', v_case.state;
+    raise exception using errcode = 'P0001', message = 'case_not_terminal';
   end if;
 
   select o.grant_reactivation_days into v_reactivation_days
@@ -293,7 +321,7 @@ begin
 
   get diagnostics v_rows = row_count;
   if v_rows = 0 then
-    raise exception 'reopen_case: not authorized';
+    raise exception using errcode = 'P0001', message = 'not_authorized';
   end if;
 
   insert into public.audit_events (
@@ -350,6 +378,52 @@ Behavior:
 - Returns one row per Participant actually restored, genuinely deduplicated by the RPC's own
   `select distinct` — never a promise the TypeScript layer has to keep on the RPC's behalf.
 
+## RPC error contract
+
+This project already has an established, working convention for this exact problem — used by
+`save_blueprint` (`supabase/migrations/20260729130000_blueprint_authoring.sql`) and read by
+`src/application/save-blueprint.ts`: every `raise exception` uses
+`raise exception using errcode = 'P0001', message = 'stable_snake_case_code'` — a fixed literal
+with no `%`-interpolated values, so `error.message` on the JS side is always that exact string, not
+a sentence that could be reworded later. `close_case` and `reopen_case` follow it exactly (every
+`raise exception` above already uses this form, not the free-text version an earlier draft of this
+spec had). The stable codes are:
+
+| RPC | code | meaning |
+|---|---|---|
+| `close_case` | `invalid_outcome` | `p_outcome` wasn't `'completed'` or `'cancelled'` |
+| `close_case` | `case_not_found` | no Case with that id |
+| `close_case` | `case_not_open` | Case's `state` wasn't `'open'` when the transaction acquired the lock |
+| `close_case` | `documentation_incomplete` | `outcome = 'completed'` but a client-visible Requirement is missing or outstanding |
+| `close_case` | `cancellation_note_required` | `outcome = 'cancelled'` with a blank/whitespace-only note |
+| `close_case`, `reopen_case` | `not_authorized` | RLS silently dropped the `UPDATE` (caller isn't a member of the Organization) |
+| `reopen_case` | `case_not_terminal` | Case's `state` wasn't `'completed'` or `'cancelled'` |
+
+```ts
+const CLOSE_CASE_MESSAGES: Record<string, string> = {
+  invalid_outcome: 'Resultado de cierre no válido.',
+  case_not_found: 'El expediente ya no existe.',
+  case_not_open: 'Este expediente ya no está abierto.',
+  documentation_incomplete: 'No se puede marcar como completado: aún hay documentación pendiente.',
+  cancellation_note_required: 'Escribe el motivo de cancelación que verá el cliente.',
+  not_authorized: 'No tienes permiso para cerrar este expediente.',
+};
+
+function mapCloseCaseError(error: PostgrestError): UseCaseError {
+  const message = CLOSE_CASE_MESSAGES[error.message];
+  if (!message) return new UseCaseError('unexpected', 'No pudimos cerrar el expediente. Intenta de nuevo.');
+  const reason = error.message === 'documentation_incomplete' || error.message === 'cancellation_note_required'
+    ? 'validation'
+    : error.message === 'not_authorized' ? 'forbidden' : 'conflict';
+  return new UseCaseError(reason, message);
+}
+```
+
+(`mapReopenCaseError` follows the identical shape against its own two-entry table:
+`case_not_found` → `not_found`, `case_not_terminal` → `conflict`, `not_authorized` → `forbidden`.)
+Any `error.message` not present in the table — a genuine, unanticipated Postgres error — falls
+through to `'unexpected'`, never silently swallowed as one of the known cases.
+
 ## Trigger changes
 
 `app.downgrade_grants_on_completion()` is renamed to `app.downgrade_grants_on_closure()` and its
@@ -384,10 +458,17 @@ which Participants were restored, which a trigger fired from a generic `UPDATE .
 
 ## Application layer (`src/features/cases/cases.ts`)
 
-`setCaseState()` is removed (nothing outside its own test calls it) and replaced by two functions
-that call the RPCs and own the notification side effects. Neither calls `recordAuditEvent` —
-the audit event is already written, atomically, inside the RPC itself (see above); a second write
-from TypeScript would double the trail entry.
+`setCaseState()` is removed and replaced by two functions that call the RPCs and own the
+notification side effects. Neither calls `recordAuditEvent` — the audit event is already written,
+atomically, inside the RPC itself (see above); a second write from TypeScript would double the
+trail entry.
+
+**Removal is a repo-wide sweep, not an assumption.** Before deleting `setCaseState`, the
+implementation task greps the *whole* repository — `src/`, `tests/`, `scripts/`, and `docs/` — for
+`setCaseState`, not only `tests/integration/case-services.test.ts` (the one caller this design
+happens to already know about). A refactor of this kind is exactly the kind that leaves a forgotten
+helper or a stale doc reference behind; the task is not done until that grep comes back clean after
+the rewrite, not before it.
 
 ```ts
 export async function closeCase(
@@ -401,7 +482,7 @@ export async function closeCase(
     p_outcome: outcome,
     p_closing_note: closingNote ?? null,
   });
-  if (error) throw new UseCaseError(mapCloseCaseError(error), ...);
+  if (error) throw mapCloseCaseError(error);
 
   await notifyParticipantsOfClosure(client, caseId, outcome, closingNote); // best-effort, try/catch
 }
@@ -411,7 +492,7 @@ export async function reopenCase(
   caseId: string,
 ): Promise<{ restoredParticipantIds: string[]; requiresReinvitation: boolean }> {
   const { data, error } = await client.rpc('reopen_case', { p_case_id: caseId });
-  if (error) throw new UseCaseError(mapReopenCaseError(error), ...);
+  if (error) throw mapReopenCaseError(error);
 
   // The RPC's own `select distinct` is the real guarantee of uniqueness here — this reads its
   // result directly rather than re-deduplicating a set the RPC's contract already promises.
@@ -424,6 +505,16 @@ export async function reopenCase(
   return { restoredParticipantIds, requiresReinvitation: restoredParticipantIds.length === 0 };
 }
 ```
+
+**Ordering invariant for `reopenCase`, stated explicitly:** `client.rpc('reopen_case', ...)` is
+`await`ed — meaning the RPC's transaction has already committed — *before*
+`notifyParticipantsOfReopening` (and therefore `reissueParticipantInvitation`) ever runs. A fresh
+Portal token is never minted ahead of, or independently of, a successful reopen. The failure mode
+this rules out: if the token were emitted first and the RPC then failed or rolled back, the client
+would hold a working link into a Case that is still closed. Because the notification step is itself
+best-effort (wrapped in its own try/catch, per the existing pattern), the only way it runs at all is
+after `reopen_case` has already succeeded — there is no code path where a token is issued for a Case
+that didn't actually reopen.
 
 Neither function takes `actorAuthUserId` as a parameter anymore — the RPC reads `auth.uid()`
 directly inside the same transaction as the state change, exactly like `closed_by_auth_user_id` and
@@ -559,6 +650,14 @@ merely looking correct on today's date.
   correct, truly deduplicated Participant set (via the RPC's own `DISTINCT`, not a client-side
   workaround) when a Participant somehow holds two grant rows; the audit event exists atomically
   with the state change, same as `close_case`.
+- **Full-rollback test** (the actual proof that moving the audit write inside the RPC accomplishes
+  its stated goal, not just a plausibility argument): force the `INSERT INTO audit_events` inside
+  `close_case` to fail deliberately — e.g. temporarily `REVOKE INSERT ON audit_events FROM
+  authenticated` for the duration of one test, or insert a row shaped to violate
+  `audit_actor_is_attributable` — and assert two things together: the RPC call itself raises, *and*
+  a fresh `SELECT` of the Case immediately afterward still shows `state = 'open'` and `closed_at is
+  null`. The point is proving the state change never became visible without its audit event, not
+  merely that an error was thrown.
 - **Integration tests**: `closeCase`/`reopenCase` — notification failures don't roll back or throw
   past the use case; reopening with zero restorable grants sends no email and reports
   `requiresReinvitation: true`; reopening calls `emit_participant_invitation` exactly once per
