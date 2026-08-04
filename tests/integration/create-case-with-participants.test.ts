@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createOrganizationWithOwner } from '../helpers/clients';
+import { adminClient, createOrganizationWithOwner, addStaffMember } from '../helpers/clients';
 import {
   createCaseWithParticipants,
   createCaseWithParticipantsSchema,
@@ -394,5 +394,189 @@ describe('createCaseWithParticipants orchestration', () => {
       expect(result.participants[0]!.invited).toBe(false);
       expect(result.invitationFailures).toEqual([{ email, reason: 'Resend API error: 500 unknown_error' }]);
     });
+  });
+});
+
+describe('participant-scoped requirements keep their stage_id', () => {
+  it('resolves stage_position against the cloned case_stages for a participant-scoped requirement', async () => {
+    const { organizationId, owner } = await createOrganizationWithOwner('Notaría Stage Wiring', 'notary');
+    const staff = await addStaffMember(owner, organizationId);
+    const { data: blueprint } = await owner.client
+      .from('blueprints')
+      .insert({ organization_id: organizationId, name: 'Con etapas', requirement_definitions: [] })
+      .select('id')
+      .single();
+    await owner.client.from('blueprint_participant_templates').insert([
+      { organization_id: organizationId, blueprint_id: blueprint!.id, role_key: 'buyer', display_name: 'Comprador', position: 0 },
+    ]);
+    await owner.client.from('blueprint_stages').insert([
+      { organization_id: organizationId, blueprint_id: blueprint!.id, name: 'Kick-Off', position: 0 },
+      { organization_id: organizationId, blueprint_id: blueprint!.id, name: 'Milestone 1', position: 1 },
+    ]);
+    await owner.client
+      .from('blueprints')
+      .update({
+        requirement_definitions: [
+          { key: 'ine-comprador', type: 'document', label: 'INE', scope: 'participant', participant_role_key: 'buyer', stage_position: 1 },
+        ],
+      })
+      .eq('id', blueprint!.id);
+
+    const { data: client } = await adminClient()
+      .from('clients')
+      .insert({ organization_id: organizationId, full_name: 'Comprador', email: `stage-wiring-${randomUUID()}@example.test` })
+      .select('id, email')
+      .single();
+
+    const result = await createCaseWithParticipants(
+      staff.client,
+      {
+        organizationId,
+        title: 'Compraventa con etapas',
+        blueprintId: blueprint!.id,
+        participants: [
+          {
+            source: 'blueprint',
+            participantTemplateRoleKey: 'buyer',
+            roleLabel: 'Comprador',
+            fullName: 'Comprador',
+            email: client!.email!,
+            requirementKeys: ['ine-comprador'],
+          },
+        ],
+        sendInvitations: false,
+      },
+      staff.userId,
+    );
+
+    const { data: milestone1 } = await adminClient()
+      .from('case_stages')
+      .select('id')
+      .eq('case_id', result.caseId)
+      .eq('position', 1)
+      .single();
+    const { data: req } = await adminClient()
+      .from('requirements')
+      .select('stage_id')
+      .eq('case_id', result.caseId)
+      .eq('label', 'INE')
+      .single();
+    expect(req?.stage_id).toBe(milestone1!.id);
+  });
+
+  it('fails Case creation when stage_position cannot be resolved, instead of silently using stage_id = null', async () => {
+    const { organizationId, owner } = await createOrganizationWithOwner('Notaría Stage Unresolved', 'notary');
+    const staff = await addStaffMember(owner, organizationId);
+    const { data: blueprint } = await owner.client
+      .from('blueprints')
+      .insert({
+        organization_id: organizationId,
+        name: 'Etapa rota',
+        // stage_position: 5 but the Blueprint has zero blueprint_stages rows — unresolvable.
+        requirement_definitions: [
+          { key: 'ine-comprador', type: 'document', label: 'INE', scope: 'participant', participant_role_key: 'buyer', stage_position: 5 },
+        ],
+      })
+      .select('id')
+      .single();
+    await owner.client.from('blueprint_participant_templates').insert([
+      { organization_id: organizationId, blueprint_id: blueprint!.id, role_key: 'buyer', display_name: 'Comprador', position: 0 },
+    ]);
+
+    const { data: client } = await adminClient()
+      .from('clients')
+      .insert({ organization_id: organizationId, full_name: 'Comprador', email: `stage-unresolved-${randomUUID()}@example.test` })
+      .select('id, email')
+      .single();
+
+    await expect(
+      createCaseWithParticipants(
+        staff.client,
+        {
+          organizationId,
+          title: 'Compraventa rota',
+          blueprintId: blueprint!.id,
+          participants: [
+            {
+              source: 'blueprint',
+              participantTemplateRoleKey: 'buyer',
+              roleLabel: 'Comprador',
+              fullName: 'Comprador',
+              email: client!.email!,
+              requirementKeys: ['ine-comprador'],
+            },
+          ],
+          sendInvitations: false,
+        },
+        staff.userId,
+      ),
+    ).rejects.toMatchObject({ reason: 'validation' });
+
+    // No partial Case with a dangling requirement should be left in a state a later task could
+    // mistake for legitimate "Sin etapa" data — confirm no Case with this title exists at all is
+    // NOT assertable (createCaseWithParticipants is not transactional across its own steps, matching
+    // its own documented "NOT ATOMIC" contract) — instead confirm no requirement with a null
+    // stage_id and this label exists, which is the actual invariant this fix protects.
+    const { data: orphaned } = await adminClient()
+      .from('requirements')
+      .select('id')
+      .eq('organization_id', organizationId)
+      .is('stage_id', null)
+      .eq('label', 'INE');
+    expect(orphaned).toHaveLength(0);
+  });
+
+  it('leaves stage_id null when the Blueprint requirement definition has no stage_position at all', async () => {
+    const { organizationId, owner } = await createOrganizationWithOwner('Notaría Stage None', 'notary');
+    const staff = await addStaffMember(owner, organizationId);
+    const { data: blueprint } = await owner.client
+      .from('blueprints')
+      .insert({
+        organization_id: organizationId,
+        name: 'Sin etapas',
+        requirement_definitions: [
+          { key: 'ine-comprador', type: 'document', label: 'INE', scope: 'participant', participant_role_key: 'buyer' },
+        ],
+      })
+      .select('id')
+      .single();
+    await owner.client.from('blueprint_participant_templates').insert([
+      { organization_id: organizationId, blueprint_id: blueprint!.id, role_key: 'buyer', display_name: 'Comprador', position: 0 },
+    ]);
+
+    const { data: client } = await adminClient()
+      .from('clients')
+      .insert({ organization_id: organizationId, full_name: 'Comprador', email: `stage-none-${randomUUID()}@example.test` })
+      .select('id, email')
+      .single();
+
+    const result = await createCaseWithParticipants(
+      staff.client,
+      {
+        organizationId,
+        title: 'Compraventa sin etapas',
+        blueprintId: blueprint!.id,
+        participants: [
+          {
+            source: 'blueprint',
+            participantTemplateRoleKey: 'buyer',
+            roleLabel: 'Comprador',
+            fullName: 'Comprador',
+            email: client!.email!,
+            requirementKeys: ['ine-comprador'],
+          },
+        ],
+        sendInvitations: false,
+      },
+      staff.userId,
+    );
+
+    const { data: req } = await adminClient()
+      .from('requirements')
+      .select('stage_id')
+      .eq('case_id', result.caseId)
+      .eq('label', 'INE')
+      .single();
+    expect(req?.stage_id).toBeNull();
   });
 });

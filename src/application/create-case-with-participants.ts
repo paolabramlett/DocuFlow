@@ -7,7 +7,12 @@ import { logDomainEvent } from "./events";
 import { addRequirement, createCase } from "@/features/cases/cases";
 import { createParticipant, findOrCreateClient } from "@/features/participants/participants";
 import { issueInvitation } from "@/features/case-access/invitations";
-import { getBlueprintDefinition, type BlueprintDefinition } from "@/features/blueprints/queries";
+import {
+  BLUEPRINT_INTEGRITY_MESSAGES,
+  BlueprintIntegrityError,
+  getBlueprintDefinition,
+  type BlueprintDefinition,
+} from "@/features/blueprints/queries";
 import { sendTransactionalEmail, type SendTransactionalEmailInput } from "@/lib/email/resend";
 import { escapeHtml } from "@/lib/email/escape-html";
 import { APP_ORIGIN } from "@/lib/supabase/env";
@@ -118,7 +123,23 @@ export async function createCaseWithParticipants(
 
   let blueprintDefinition: BlueprintDefinition | null = null;
   if (blueprintId) {
-    blueprintDefinition = await getBlueprintDefinition(client, blueprintId, organizationId);
+    // getBlueprintDefinition re-validates the Blueprint's structural integrity on every read (not
+    // just at save time) — including that every requirement's stage_position still resolves
+    // against the Blueprint's own blueprint_stages. A Blueprint that fails this (e.g. edited into
+    // an inconsistent state after being saved) must reject the Case outright, matching this
+    // task's own "never silently drop to stage_id: null" rule (§6.1), rather than surfacing as an
+    // opaque "unexpected" failure.
+    try {
+      blueprintDefinition = await getBlueprintDefinition(client, blueprintId, organizationId);
+    } catch (error) {
+      if (error instanceof BlueprintIntegrityError) {
+        throw new UseCaseError(
+          "validation",
+          BLUEPRINT_INTEGRITY_MESSAGES[error.code] ?? "Los datos de la plantilla no son válidos.",
+        );
+      }
+      throw error;
+    }
     if (!blueprintDefinition) {
       throw new UseCaseError("not_found", "La plantilla ya no existe.");
     }
@@ -155,6 +176,20 @@ export async function createCaseWithParticipants(
     }
   }
 
+  // Resolve each participant-scoped Requirement definition's stage_position (if any) against the
+  // Blueprint's own blueprint_stages, up front — this is validation, not a write, so a Case with a
+  // dangling stage reference is never created (§6.1 of the design spec). Keyed by requirement key
+  // since that's what requirementKeys/allowedByRole already use; case-scope definitions don't need
+  // this (create_case's own SQL already resolves their stage_id during the clone).
+  const stagePositionByRequirementKey = new Map<string, number>();
+  if (blueprintDefinition) {
+    for (const r of blueprintDefinition.requirements) {
+      if (r.scope === "participant" && r.stagePosition !== null) {
+        stagePositionByRequirementKey.set(r.key, r.stagePosition);
+      }
+    }
+  }
+
   // Resolve every participant's durable Client record up front. `cases.client_id` predates the
   // Participant model and is still NOT NULL, so the Case needs one Client to be created with; the
   // first participant's is the natural choice. Participants remain the authority for access.
@@ -183,6 +218,20 @@ export async function createCaseWithParticipants(
     );
   }
 
+  // Case-level lookup from stage_position -> the cloned case_stages.id, built once (not per
+  // participant/requirement) since create_case already cloned every blueprint_stages row 1:1 into
+  // case_stages with matching position, keyed by this same Case.
+  const stagePositionToStageId = new Map<number, string>();
+  if (blueprintId) {
+    const { data: clonedStages } = await client
+      .from("case_stages")
+      .select("id, position")
+      .eq("case_id", caseId);
+    for (const s of clonedStages ?? []) {
+      stagePositionToStageId.set(s.position, s.id);
+    }
+  }
+
   // Fetched once, outside the participant loop, purely for the invitation email's copy — never
   // gates access (RLS already decided the Case could be created at all, above).
   let organizationName = "Avanza";
@@ -209,34 +258,51 @@ export async function createCaseWithParticipants(
       roleLabel: p.roleLabel,
     });
 
-    // Resolve this participant's actual Requirement labels. For a 'blueprint' participant, the
-    // Blueprint is the allowlist (already validated and precomputed above, before any write): the
-    // client can narrow (deselect), never expand or invent — an unknown key, or a key that exists
-    // only under a different role, is silently filtered out, never a rejection of the whole
-    // request. The persisted label is always the Blueprint's own canonical text, never anything
-    // the client sent. 'manual' participants keep today's existing, unrestricted freeform
-    // behaviour, in every combination (alone, with an active Blueprint, mixed with a 'blueprint'
-    // participant in the same Case) — their suggestions are a convenience pool only; they are
-    // never bound to any role_key.
-    let effectiveLabels: string[];
+    // Resolve this participant's actual Requirement [key, label] pairs. For a 'blueprint'
+    // participant, the Blueprint is the allowlist (already validated and precomputed above,
+    // before any write): the client can narrow (deselect), never expand or invent — an unknown
+    // key, or a key that exists only under a different role, is silently filtered out, never a
+    // rejection of the whole request. The persisted label is always the Blueprint's own canonical
+    // text, never anything the client sent. 'manual' participants keep today's existing,
+    // unrestricted freeform behaviour, in every combination (alone, with an active Blueprint,
+    // mixed with a 'blueprint' participant in the same Case) — their suggestions are a convenience
+    // pool only; they are never bound to any role_key. Kept as [key, label] pairs (rather than
+    // labels alone) so stage_position can be resolved per requirement below.
+    let effectiveEntries: [string, string][];
     if (p.source === "manual") {
-      effectiveLabels = p.requirements;
+      effectiveEntries = p.requirements.map((label) => [label, label]);
     } else {
       const allowedByKey = allowedByRole.get(p.participantTemplateRoleKey)!;
-      effectiveLabels = p.requirementKeys
+      effectiveEntries = p.requirementKeys
         .filter((key) => allowedByKey.has(key))
-        .map((key) => allowedByKey.get(key)!);
+        .map((key) => [key, allowedByKey.get(key)!]);
     }
 
     let position = 0;
-    for (const label of effectiveLabels) {
+    for (const [key, label] of effectiveEntries) {
+      let stageId: string | undefined;
+      const stagePosition = stagePositionByRequirementKey.get(key);
+      if (stagePosition !== undefined) {
+        stageId = stagePositionToStageId.get(stagePosition);
+        if (stageId === undefined) {
+          // A requirement definition names a stage_position that didn't survive the clone (e.g.
+          // the Blueprint's blueprint_stages was edited between validation and this write, or the
+          // position simply doesn't exist) — fail outright rather than silently dropping to
+          // stage_id: null (§6.1: "stage_id = null is not an acceptable fallback" for a
+          // Blueprint-derived requirement that specified a stage_position).
+          throw new UseCaseError(
+            "validation",
+            "No pudimos ubicar la etapa de uno de los requisitos de esta plantilla. Revisa la configuración de etapas.",
+          );
+        }
+      }
       await addRequirement(
         client,
-        { organizationId, caseId, label, position: position++, participantId },
+        { organizationId, caseId, label, position: position++, participantId, stageId },
         actorAuthUserId,
       );
     }
-    totalRequirementCount += effectiveLabels.length;
+    totalRequirementCount += effectiveEntries.length;
 
     let invited = false;
     if (sendInvitations) {
