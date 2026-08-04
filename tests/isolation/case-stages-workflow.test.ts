@@ -483,6 +483,76 @@ describe('reopen_requirement', () => {
     expect(error?.message).toBe('not_authorized');
   });
 
+  it('supersession leaves the original documents/reviews untouched and the new row starts clean', async () => {
+    const w = await buildStagedCase({ name: 'Notaría Reopen Untouched', stageCount: 1 });
+    const admin = adminClient();
+
+    const { data: document, error: documentError } = await admin
+      .from('documents')
+      .insert({
+        organization_id: w.organizationId,
+        case_id: w.caseId,
+        requirement_id: w.requirementIds[0]!,
+        storage_path: `reopen-untouched/${randomUUID()}.pdf`,
+        file_name: 'documento.pdf',
+        content_type: 'application/pdf',
+        size_bytes: 1024,
+      })
+      .select('id')
+      .single();
+    expect(documentError).toBeNull();
+
+    const { error: reviewError } = await admin
+      .from('reviews')
+      .insert({
+        organization_id: w.organizationId,
+        document_id: document!.id,
+        case_id: w.caseId,
+        decision: 'approved',
+      });
+    expect(reviewError).toBeNull();
+
+    await admin.from('requirements').update({ status: 'satisfied' }).eq('id', w.requirementIds[0]!);
+    await admin.from('case_stages').update({ status: 'completed' }).eq('id', w.stageIds[0]!);
+
+    const { data: newId, error } = await w.staff.client.rpc('reopen_requirement', {
+      p_requirement_id: w.requirementIds[0]!,
+      p_reason: 'Verificando que los documentos originales sobreviven.',
+    });
+    expect(error).toBeNull();
+
+    const { data: originalDocuments } = await admin
+      .from('documents')
+      .select('id, requirement_id')
+      .eq('requirement_id', w.requirementIds[0]!);
+    expect(originalDocuments).toHaveLength(1);
+    expect(originalDocuments?.[0]).toMatchObject({ id: document!.id, requirement_id: w.requirementIds[0] });
+
+    const { data: originalReviews } = await admin
+      .from('reviews')
+      .select('decision, document_id')
+      .eq('document_id', document!.id);
+    expect(originalReviews).toHaveLength(1);
+    expect(originalReviews?.[0]).toMatchObject({ decision: 'approved', document_id: document!.id });
+
+    const { data: newDocuments } = await admin.from('documents').select('id').eq('requirement_id', newId!);
+    expect(newDocuments).toEqual([]);
+  });
+
+  it('rejects reopening a requirement that has been soft-deleted', async () => {
+    const w = await buildStagedCase({ name: 'Notaría Reopen SoftDeleted', stageCount: 1 });
+    const admin = adminClient();
+    await admin.from('requirements').update({ status: 'satisfied' }).eq('id', w.requirementIds[0]!);
+    await admin.from('case_stages').update({ status: 'completed' }).eq('id', w.stageIds[0]!);
+    await admin.from('requirements').update({ deleted_at: new Date().toISOString() }).eq('id', w.requirementIds[0]!);
+
+    const { error } = await w.staff.client.rpc('reopen_requirement', {
+      p_requirement_id: w.requirementIds[0]!,
+      p_reason: 'Motivo',
+    });
+    expect(error?.message).toBe('requirement_not_found');
+  });
+
   it('the audit event records the original and new requirement ids atomically', async () => {
     const w = await buildStagedCase({ name: 'Notaría Reopen Audit', stageCount: 1 });
     await adminClient().from('requirements').update({ status: 'satisfied' }).eq('id', w.requirementIds[0]!);
