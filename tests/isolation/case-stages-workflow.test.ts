@@ -370,3 +370,136 @@ describe('advance_case_stage', () => {
     expect(error?.message).toBe('not_authorized');
   });
 });
+
+describe('reopen_requirement', () => {
+  it('supersedes the original: original becomes archived+superseded, new row is clean and outstanding', async () => {
+    const w = await buildStagedCase({ name: 'Notaría Reopen Basic', stageCount: 1 });
+    await adminClient().from('requirements').update({ status: 'satisfied' }).eq('id', w.requirementIds[0]!);
+    await adminClient().from('case_stages').update({ status: 'completed' }).eq('id', w.stageIds[0]!);
+
+    const { data: newId, error } = await w.staff.client.rpc('reopen_requirement', {
+      p_requirement_id: w.requirementIds[0]!,
+      p_reason: 'El documento subido no coincide con el titular.',
+    });
+    expect(error).toBeNull();
+
+    const { data: original } = await adminClient()
+      .from('requirements')
+      .select('status, superseded_at, superseded_by_requirement_id')
+      .eq('id', w.requirementIds[0]!)
+      .single();
+    expect(original).toMatchObject({ status: 'archived', superseded_by_requirement_id: newId });
+    expect(original?.superseded_at).not.toBeNull();
+
+    const { data: fresh } = await adminClient()
+      .from('requirements')
+      .select('status, stage_id, participant_id, reopened_from_requirement_id, reopen_reason, label')
+      .eq('id', newId!)
+      .single();
+    expect(fresh).toMatchObject({
+      status: 'outstanding',
+      stage_id: w.stageIds[0],
+      participant_id: w.participantId,
+      reopened_from_requirement_id: w.requirementIds[0],
+      reopen_reason: 'El documento subido no coincide con el titular.',
+      label: 'Requisito etapa 1',
+    });
+  });
+
+  it('rejects reopening a requirement whose stage is not yet completed', async () => {
+    const w = await buildStagedCase({ name: 'Notaría Reopen NotCompleted', stageCount: 1 });
+    await adminClient().from('requirements').update({ status: 'satisfied' }).eq('id', w.requirementIds[0]!);
+
+    const { error } = await w.staff.client.rpc('reopen_requirement', {
+      p_requirement_id: w.requirementIds[0]!,
+      p_reason: 'Motivo',
+    });
+    expect(error?.message).toBe('stage_not_completed');
+  });
+
+  it('rejects reopening a requirement that is not currently satisfied', async () => {
+    const w = await buildStagedCase({ name: 'Notaría Reopen NotSatisfied', stageCount: 1 });
+    await adminClient().from('case_stages').update({ status: 'completed' }).eq('id', w.stageIds[0]!);
+
+    const { error } = await w.staff.client.rpc('reopen_requirement', {
+      p_requirement_id: w.requirementIds[0]!,
+      p_reason: 'Motivo',
+    });
+    expect(error?.message).toBe('requirement_not_satisfied');
+  });
+
+  it('rejects a blank reason', async () => {
+    const w = await buildStagedCase({ name: 'Notaría Reopen BlankReason', stageCount: 1 });
+    await adminClient().from('requirements').update({ status: 'satisfied' }).eq('id', w.requirementIds[0]!);
+    await adminClient().from('case_stages').update({ status: 'completed' }).eq('id', w.stageIds[0]!);
+
+    const { error } = await w.staff.client.rpc('reopen_requirement', {
+      p_requirement_id: w.requirementIds[0]!,
+      p_reason: '   ',
+    });
+    expect(error?.message).toBe('reopen_reason_required');
+  });
+
+  it('rejects reopening a requirement with no stage at all', async () => {
+    const w = await buildStagedCase({ name: 'Notaría Reopen NoStage', stageCount: 1 });
+    const { data: bare } = await adminClient()
+      .from('requirements')
+      .insert({
+        organization_id: w.organizationId,
+        case_id: w.caseId,
+        participant_id: w.participantId,
+        stage_id: null,
+        type: 'document',
+        label: 'Sin etapa',
+        position: 1,
+        status: 'satisfied',
+      })
+      .select('id')
+      .single();
+
+    const { error } = await w.staff.client.rpc('reopen_requirement', {
+      p_requirement_id: bare!.id,
+      p_reason: 'Motivo',
+    });
+    expect(error?.message).toBe('requirement_has_no_stage');
+  });
+
+  it('a Client cannot call reopen_requirement', async () => {
+    const w = await buildStagedCase({ name: 'Notaría Reopen Client', stageCount: 1 });
+    await adminClient().from('requirements').update({ status: 'satisfied' }).eq('id', w.requirementIds[0]!);
+    await adminClient().from('case_stages').update({ status: 'completed' }).eq('id', w.stageIds[0]!);
+    const granted = await grantVerifiedAccess({
+      world: {
+        organizationId: w.organizationId, owner: w.owner, staff: w.staff, clientId: w.clientId, clientEmail: w.clientEmail,
+        blueprintId: '', caseId: w.caseId, participantId: w.participantId, requirementIds: w.requirementIds,
+      },
+      permission: 'view',
+    });
+
+    const { error } = await granted.client.rpc('reopen_requirement', {
+      p_requirement_id: w.requirementIds[0]!,
+      p_reason: 'Motivo',
+    });
+    expect(error?.message).toBe('not_authorized');
+  });
+
+  it('the audit event records the original and new requirement ids atomically', async () => {
+    const w = await buildStagedCase({ name: 'Notaría Reopen Audit', stageCount: 1 });
+    await adminClient().from('requirements').update({ status: 'satisfied' }).eq('id', w.requirementIds[0]!);
+    await adminClient().from('case_stages').update({ status: 'completed' }).eq('id', w.stageIds[0]!);
+
+    const { data: newId } = await w.staff.client.rpc('reopen_requirement', {
+      p_requirement_id: w.requirementIds[0]!,
+      p_reason: 'Motivo de auditoría',
+    });
+
+    const { data: events } = await adminClient()
+      .from('audit_events')
+      .select('target_id, metadata')
+      .eq('case_id', w.caseId)
+      .eq('action', 'requirement.reopened');
+    expect(events).toHaveLength(1);
+    expect(events?.[0]?.target_id).toBe(newId);
+    expect(events?.[0]?.metadata).toEqual({ original_requirement_id: w.requirementIds[0], reason: 'Motivo de auditoría' });
+  });
+});

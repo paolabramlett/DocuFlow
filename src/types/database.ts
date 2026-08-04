@@ -1135,6 +1135,10 @@ export type Database = {
           participant_id: string
         }[]
       }
+      reopen_requirement: {
+        Args: { p_reason: string; p_requirement_id: string }
+        Returns: string
+      }
       save_blueprint: {
         Args: {
           blueprint_description?: string
