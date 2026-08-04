@@ -18,6 +18,7 @@ type DbClient = SupabaseClient<Database>;
  */
 
 export type ReqDisplayState = "approved" | "review" | "awaiting" | "rejected" | "missing";
+export type StageStatus = "locked" | "active" | "completed";
 
 export interface RequirementView {
   id: string;
@@ -26,12 +27,25 @@ export interface RequirementView {
   rejectionReason?: string;
   /** The most recent Document awaiting or having received a decision, if any was uploaded. */
   documentId?: string;
+  /** null when the Case has no workflow, OR when this is a legacy "Sin etapa" requirement inside
+   *  a Case that does have one. Both render outside any stage grouping in the UI. */
+  stageId: string | null;
+  /** Present only on a row created by reopen_requirement — the label the client sees is unchanged
+   *  from the original, but the UI needs this to render it under "Correcciones pendientes". */
+  reopenedFromRequirementId: string | null;
 }
 export interface ParticipantView {
   id: string;
   name: string;
   role: string;
   requirements: RequirementView[];
+}
+export interface StageView {
+  id: string;
+  name: string;
+  position: number;
+  status: StageStatus;
+  completionMode: "requirements" | "manual";
 }
 export interface CaseView {
   id: string;
@@ -42,6 +56,8 @@ export interface CaseView {
   closedAt?: string;
   clientClosingNote?: string;
   participants: ParticipantView[];
+  /** Empty array = this Case has no workflow (legacy flat behavior everywhere in the UI). */
+  stages: StageView[];
 }
 
 function refFromId(id: string): string {
@@ -70,7 +86,16 @@ interface RawRequirement {
   status: string;
   position: number;
   participant_id: string | null;
+  stage_id: string | null;
+  reopened_from_requirement_id: string | null;
   documents: RawDocument[];
+}
+interface RawStage {
+  id: string;
+  name: string;
+  position: number;
+  status: StageStatus;
+  completion_mode: "requirements" | "manual";
 }
 
 function deriveState(
@@ -107,8 +132,10 @@ export async function getWorkspaceCases(): Promise<CaseView[]> {
     .from("cases")
     .select(
       `id, title, state, created_at, closed_at, client_closing_note,
+       stages:case_stages(id, name, position, status, completion_mode),
        participants:case_participants(id, role_label, client:clients(full_name),
          requirements(id, label, status, position, participant_id, deleted_at, superseded_at,
+           stage_id, reopened_from_requirement_id,
            documents(id, created_at, reviews(decision, reason, created_at)))
        )`,
     )
@@ -124,6 +151,16 @@ export async function getWorkspaceCases(): Promise<CaseView[]> {
     state: c.state,
     closedAt: c.closed_at ?? undefined,
     clientClosingNote: c.client_closing_note ?? undefined,
+    stages: ((c.stages ?? []) as RawStage[])
+      .slice()
+      .sort((a, b) => a.position - b.position)
+      .map((s) => ({
+        id: s.id,
+        name: s.name,
+        position: s.position,
+        status: s.status,
+        completionMode: s.completion_mode,
+      })),
     participants: (c.participants ?? []).map((p) => ({
       id: p.id,
       name: p.client?.full_name ?? "—",
@@ -139,6 +176,8 @@ export async function getWorkspaceCases(): Promise<CaseView[]> {
             state: derived.state,
             rejectionReason: derived.rejectionReason,
             documentId: derived.documentId,
+            stageId: (r as RawRequirement).stage_id,
+            reopenedFromRequirementId: (r as RawRequirement).reopened_from_requirement_id,
           };
         }),
     })),
@@ -187,4 +226,47 @@ export async function getOperativeCounts(
 
   if (error) throw new Error(`getOperativeCounts: ${error.message}`);
   return { waitingClient, needsReview, readyToContinue, completedToday: count ?? 0 };
+}
+
+/** currentStageComplete per §5 of the design spec: is the active stage ready to advance? Read-only
+ *  mirror of advance_case_stage's own gates, for disabling the "Continuar" button with a specific
+ *  reason before the user even clicks it — the RPC remains the actual authority. */
+export function currentStageAdvanceBlocker(c: CaseView): string | null {
+  if (c.stages.length === 0) return "Este expediente no tiene un flujo por etapas.";
+  const active = c.stages.find((s) => s.status === "active");
+  if (!active) return "No hay una etapa activa.";
+
+  const unassigned = c.participants
+    .flatMap((p) => p.requirements)
+    .some((r) => r.stageId === null && r.state !== "approved");
+  if (unassigned) return "Hay requisitos sin etapa asignada. Resuélvelos en la sección Sin etapa.";
+
+  const reopenedPending = c.participants
+    .flatMap((p) => p.requirements)
+    .some((r) => r.reopenedFromRequirementId !== null && r.state !== "approved");
+  if (reopenedPending) return "Hay una corrección pendiente de una etapa anterior.";
+
+  const activeStageReqs = c.participants
+    .flatMap((p) => p.requirements)
+    .filter((r) => r.stageId === active.id);
+  const outstanding = activeStageReqs.filter((r) => r.state !== "approved");
+  if (outstanding.length > 0) {
+    return `Faltan ${outstanding.length} requisito${outstanding.length === 1 ? "" : "s"} de la etapa actual.`;
+  }
+  if (active.completionMode === "requirements" && activeStageReqs.length === 0) {
+    return "Esta etapa no tiene requisitos configurados.";
+  }
+  return null;
+}
+
+/** workflowDocumentationComplete per §5: every stage completed, no reopened-pending, no
+ *  unassigned-pending, anywhere in the Case. Empty stages array (no workflow) is never "complete"
+ *  in this sense — that concept simply doesn't apply, so callers must check c.stages.length first. */
+export function workflowDocumentationComplete(c: CaseView): boolean {
+  if (c.stages.length === 0) return false;
+  if (c.stages.some((s) => s.status !== "completed")) return false;
+  const allReqs = c.participants.flatMap((p) => p.requirements);
+  if (allReqs.some((r) => r.stageId === null && r.state !== "approved")) return false;
+  if (allReqs.some((r) => r.reopenedFromRequirementId !== null && r.state !== "approved")) return false;
+  return true;
 }

@@ -7,7 +7,7 @@ import { closeCase } from '@/features/cases/cases';
 /** A minimal, otherwise-valid CaseView — only `state` and `participants` matter to
  *  getOperativeCounts's in-memory buckets; the rest is filler to satisfy the type. */
 function caseView(overrides: Partial<CaseView> & Pick<CaseView, 'state' | 'participants'>): CaseView {
-  return { id: randomUUID(), ref: 'CASE-TEST', title: 'Test', opened: '1 ene 2026', ...overrides };
+  return { id: randomUUID(), ref: 'CASE-TEST', title: 'Test', opened: '1 ene 2026', stages: [], ...overrides };
 }
 
 async function completeAllRequirements(world: Awaited<ReturnType<typeof buildOrganizationWorld>>) {
@@ -54,7 +54,7 @@ describe('getOperativeCounts: state === "open" guard on waitingClient/needsRevie
     });
     const closedCase = caseView({
       state: 'completed',
-      participants: [{ id: 'p1', name: 'X', role: 'Cliente', requirements: [{ id: 'r1', label: 'R', state: 'review' }] }],
+      participants: [{ id: 'p1', name: 'X', role: 'Cliente', requirements: [{ id: 'r1', label: 'R', state: 'review', stageId: null, reopenedFromRequirementId: null }] }],
     });
 
     const counts = await getOperativeCounts(world.staff.client, world.organizationId, [closedCase]);
@@ -70,7 +70,7 @@ describe('getOperativeCounts: state === "open" guard on waitingClient/needsRevie
     });
     const closedCase = caseView({
       state: 'cancelled',
-      participants: [{ id: 'p1', name: 'X', role: 'Cliente', requirements: [{ id: 'r1', label: 'R', state: 'missing' }] }],
+      participants: [{ id: 'p1', name: 'X', role: 'Cliente', requirements: [{ id: 'r1', label: 'R', state: 'missing', stageId: null, reopenedFromRequirementId: null }] }],
     });
 
     const counts = await getOperativeCounts(world.staff.client, world.organizationId, [closedCase]);
@@ -86,7 +86,7 @@ describe('getOperativeCounts: state === "open" guard on waitingClient/needsRevie
     });
     const closedCase = caseView({
       state: 'completed',
-      participants: [{ id: 'p1', name: 'X', role: 'Cliente', requirements: [{ id: 'r1', label: 'R', state: 'approved' }] }],
+      participants: [{ id: 'p1', name: 'X', role: 'Cliente', requirements: [{ id: 'r1', label: 'R', state: 'approved', stageId: null, reopenedFromRequirementId: null }] }],
     });
 
     const counts = await getOperativeCounts(world.staff.client, world.organizationId, [closedCase]);
@@ -102,15 +102,15 @@ describe('getOperativeCounts: state === "open" guard on waitingClient/needsRevie
     });
     const openReview = caseView({
       state: 'open',
-      participants: [{ id: 'p1', name: 'X', role: 'Cliente', requirements: [{ id: 'r1', label: 'R', state: 'review' }] }],
+      participants: [{ id: 'p1', name: 'X', role: 'Cliente', requirements: [{ id: 'r1', label: 'R', state: 'review', stageId: null, reopenedFromRequirementId: null }] }],
     });
     const openWaiting = caseView({
       state: 'open',
-      participants: [{ id: 'p2', name: 'Y', role: 'Cliente', requirements: [{ id: 'r2', label: 'R', state: 'missing' }] }],
+      participants: [{ id: 'p2', name: 'Y', role: 'Cliente', requirements: [{ id: 'r2', label: 'R', state: 'missing', stageId: null, reopenedFromRequirementId: null }] }],
     });
     const openReady = caseView({
       state: 'open',
-      participants: [{ id: 'p3', name: 'Z', role: 'Cliente', requirements: [{ id: 'r3', label: 'R', state: 'approved' }] }],
+      participants: [{ id: 'p3', name: 'Z', role: 'Cliente', requirements: [{ id: 'r3', label: 'R', state: 'approved', stageId: null, reopenedFromRequirementId: null }] }],
     });
 
     const counts = await getOperativeCounts(world.staff.client, world.organizationId, [openReview, openWaiting, openReady]);

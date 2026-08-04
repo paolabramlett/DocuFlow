@@ -20,6 +20,8 @@ const reviewableRequirement: RequirementView = {
   label: 'INE',
   state: 'review',
   documentId: 'doc-1',
+  stageId: null,
+  reopenedFromRequirementId: null,
 };
 
 describe('RequirementRow — caseOpen gate (NOTE(#65): first coverage for this note)', () => {

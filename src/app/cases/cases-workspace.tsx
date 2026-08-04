@@ -11,7 +11,16 @@ import { useState } from "react";
 import { AppShell, type ShellAccount } from "@/components/app-shell";
 import { IconCheck, IconClock, IconDot, IconEye, IconPlus, IconSearch, IconX, type IconProps } from "@/components/icons";
 import type { CaseView, OperativeCounts, ParticipantView, ReqDisplayState, RequirementView } from "@/features/cases/queries";
-import { closeCaseAction, getDocumentDownloadUrlAction, reopenCaseAction, reviewDocumentAction, sendManualReminderAction } from "./actions";
+import { currentStageAdvanceBlocker } from "@/features/cases/queries";
+import {
+  advanceCaseStageAction,
+  assignRequirementStageAction,
+  closeCaseAction,
+  getDocumentDownloadUrlAction,
+  reopenCaseAction,
+  reviewDocumentAction,
+  sendManualReminderAction,
+} from "./actions";
 
 const REQ: Record<ReqDisplayState, { label: string; fg: string; bg: string; bar: string; Icon: (p: IconProps) => React.ReactElement }> = {
   approved: { label: "Aprobado", fg: "text-success", bg: "bg-success-bg", bar: "bg-success", Icon: IconCheck },
@@ -171,6 +180,107 @@ function ParticipantColumn({ p, caseOpen }: { p: ParticipantView; caseOpen: bool
         {p.requirements.map((r) => <RequirementRow key={r.id} r={r} caseOpen={caseOpen} />)}
       </ul>
     </div>
+  );
+}
+
+function StageStepper({ c }: { c: CaseView }) {
+  const [advancing, setAdvancing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const router = useRouter();
+
+  if (c.stages.length === 0) {
+    return <p className="mb-4 text-xs font-medium text-text-secondary">Sin workflow por etapas</p>;
+  }
+
+  const blocker = currentStageAdvanceBlocker(c);
+  const activeIndex = c.stages.findIndex((s) => s.status === "active");
+  const nextStage = c.stages[activeIndex + 1];
+
+  async function advance() {
+    setAdvancing(true);
+    setError(null);
+    const result = await advanceCaseStageAction(c.id);
+    setAdvancing(false);
+    if (!result.ok) {
+      setError(result.message);
+      return;
+    }
+    router.refresh();
+  }
+
+  return (
+    <div className="mb-6 rounded-card border border-border bg-surface p-4">
+      <ol className="flex flex-wrap items-center gap-2">
+        {c.stages.map((s) => (
+          <li
+            key={s.id}
+            className={`rounded-full px-3 py-1 text-xs font-medium ${
+              s.status === "completed"
+                ? "bg-success-bg text-success"
+                : s.status === "active"
+                  ? "bg-royal-600 text-white"
+                  : "bg-app-bg text-text-secondary"
+            }`}
+          >
+            {s.name}
+          </li>
+        ))}
+      </ol>
+      {c.state === "open" && (
+        <div className="mt-3">
+          <button
+            onClick={advance}
+            disabled={advancing || blocker !== null}
+            title={blocker ?? undefined}
+            className="rounded-input bg-royal-600 px-3.5 py-2 text-sm font-semibold text-white transition-colors hover:bg-royal-700 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {advancing ? "Avanzando…" : nextStage ? `Continuar a ${nextStage.name}` : "Completar última etapa"}
+          </button>
+          {blocker && <p className="mt-1.5 text-xs text-text-secondary">{blocker}</p>}
+        </div>
+      )}
+      {error && <p className="mt-1.5 text-xs text-error">{error}</p>}
+    </div>
+  );
+}
+
+function SinEtapaSection({ c }: { c: CaseView }) {
+  const router = useRouter();
+  const [busyId, setBusyId] = useState<string | null>(null);
+
+  if (c.stages.length === 0) return null;
+  const unassigned = c.participants.flatMap((p) => p.requirements).filter((r) => r.stageId === null);
+  if (unassigned.length === 0) return null;
+  const activeStage = c.stages.find((s) => s.status === "active");
+
+  async function assign(requirementId: string) {
+    if (!activeStage) return;
+    setBusyId(requirementId);
+    await assignRequirementStageAction(requirementId, activeStage.id);
+    setBusyId(null);
+    router.refresh();
+  }
+
+  return (
+    <section className="mb-6 rounded-card border border-warning/30 bg-warning-bg/40 p-4">
+      <h3 className="text-sm font-semibold text-text-primary">Sin etapa</h3>
+      <ul className="mt-2 space-y-1.5">
+        {unassigned.map((r) => (
+          <li key={r.id} className="flex items-center justify-between gap-2 text-sm text-text-primary">
+            <span>{r.label}</span>
+            {activeStage && (
+              <button
+                onClick={() => assign(r.id)}
+                disabled={busyId === r.id}
+                className="rounded-input border border-border bg-surface px-2.5 py-1 text-xs font-medium text-text-primary hover:bg-app-bg disabled:opacity-50"
+              >
+                {busyId === r.id ? "Asignando…" : "Asignar a etapa activa"}
+              </button>
+            )}
+          </li>
+        ))}
+      </ul>
+    </section>
   );
 }
 
@@ -402,6 +512,8 @@ function CaseDetail({ c }: { c: CaseView }) {
           </div>
         )}
         {c.state !== "open" && <ClosureBanner c={c} onReopened={(msg: string | null) => setReopenMessage(msg)} />}
+        <StageStepper c={c} />
+        <SinEtapaSection c={c} />
         <section>
           <div className="flex items-end justify-between">
             <span className="text-xs font-semibold uppercase tracking-wider text-text-secondary">Progreso del expediente</span>

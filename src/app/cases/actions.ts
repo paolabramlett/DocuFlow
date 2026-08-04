@@ -24,7 +24,7 @@ import { reviewDocument, type ReviewDocumentInput } from "@/application/review-d
 import { createDocumentDownloadUrl } from "@/features/documents/documents";
 import { sendManualReminder, type SendManualReminderResult } from "@/application/send-manual-reminder";
 import { getBlueprintDefinition, type BlueprintDefinition } from "@/features/blueprints/queries";
-import { closeCase, reopenCase } from "@/features/cases/cases";
+import { closeCase, reopenCase, advanceCaseStage, reopenRequirement, assignRequirementStage } from "@/features/cases/cases";
 
 export async function createCaseAction(
   input: Omit<CreateCaseWithParticipantsInput, "organizationId">,
@@ -155,6 +155,51 @@ export async function reopenCaseAction(
 
     revalidatePath("/cases");
     return ok({ requiresReinvitation, notificationFailureCount });
+  } catch (error) {
+    return fail(error);
+  }
+}
+
+export async function advanceCaseStageAction(caseId: string): Promise<ActionResult<{ notifiedParticipantIds: string[] }>> {
+  try {
+    const staff = await getStaffContext();
+    if (!staff) {
+      return { ok: false, reason: "unauthenticated", message: "Tu sesión expiró. Inicia sesión de nuevo." };
+    }
+    const supabase = await createClient();
+    const notifiedParticipantIds = await advanceCaseStage(supabase, caseId);
+    revalidatePath("/cases");
+    return ok({ notifiedParticipantIds });
+  } catch (error) {
+    return fail(error);
+  }
+}
+
+export async function reopenRequirementAction(requirementId: string, reason: string): Promise<ActionResult<null>> {
+  try {
+    const staff = await getStaffContext();
+    if (!staff) {
+      return { ok: false, reason: "unauthenticated", message: "Tu sesión expiró. Inicia sesión de nuevo." };
+    }
+    const supabase = await createClient();
+    await reopenRequirement(supabase, requirementId, reason);
+    revalidatePath("/cases");
+    return ok(null);
+  } catch (error) {
+    return fail(error);
+  }
+}
+
+export async function assignRequirementStageAction(requirementId: string, stageId: string): Promise<ActionResult<null>> {
+  try {
+    const staff = await getStaffContext();
+    if (!staff) {
+      return { ok: false, reason: "unauthenticated", message: "Tu sesión expiró. Inicia sesión de nuevo." };
+    }
+    const supabase = await createClient();
+    await assignRequirementStage(supabase, requirementId, stageId);
+    revalidatePath("/cases");
+    return ok(null);
   } catch (error) {
     return fail(error);
   }

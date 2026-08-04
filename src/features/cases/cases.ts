@@ -282,6 +282,92 @@ export async function reopenCase(
   };
 }
 
+const ADVANCE_STAGE_MESSAGES: Record<string, string> = {
+  case_not_found: 'El expediente ya no existe.',
+  not_authorized: 'No tienes permiso para avanzar este expediente.',
+  no_active_stage: 'Este expediente no tiene una etapa activa.',
+  unassigned_requirement_pending: 'Hay requisitos sin etapa asignada. Resuélvelos primero.',
+  reopened_requirement_pending: 'Hay una corrección pendiente de una etapa anterior.',
+  stage_not_ready: 'La etapa actual todavía tiene requisitos pendientes.',
+};
+
+function mapAdvanceStageError(error: PostgrestError): UseCaseError {
+  const message = ADVANCE_STAGE_MESSAGES[error.message];
+  if (!message) return new UseCaseError('unexpected', 'No pudimos avanzar el expediente. Intenta de nuevo.');
+  const reason = error.message === 'not_authorized' ? 'forbidden' : error.message === 'case_not_found' ? 'not_found' : 'conflict';
+  return new UseCaseError(reason, message);
+}
+
+/**
+ * Advances a Case to its next Stage. All validation and the state change happen atomically inside
+ * the advance_case_stage RPC (Task 3) — this function only calls it and returns the ids of
+ * Participants who should be notified of the transition.
+ */
+export async function advanceCaseStage(client: DbClient, caseId: string): Promise<string[]> {
+  const { data, error } = await client.rpc('advance_case_stage', { p_case_id: caseId });
+  if (error) throw mapAdvanceStageError(error);
+  return (data ?? []).map((r) => r.participant_id);
+}
+
+const REOPEN_REQUIREMENT_MESSAGES: Record<string, string> = {
+  requirement_not_found: 'Ese requisito ya no existe.',
+  not_authorized: 'No tienes permiso para reabrir este requisito.',
+  requirement_has_no_stage: 'Este requisito no pertenece a ninguna etapa.',
+  stage_not_completed: 'Solo se pueden reabrir requisitos de una etapa ya completada.',
+  requirement_not_satisfied: 'Este requisito no está aprobado.',
+  reopen_reason_required: 'Escribe el motivo de la corrección.',
+};
+
+function mapReopenRequirementError(error: PostgrestError): UseCaseError {
+  const message = REOPEN_REQUIREMENT_MESSAGES[error.message];
+  if (!message) return new UseCaseError('unexpected', 'No pudimos reabrir el requisito. Intenta de nuevo.');
+  const reason =
+    error.message === 'not_authorized' ? 'forbidden'
+    : error.message === 'requirement_not_found' ? 'not_found'
+    : error.message === 'reopen_reason_required' ? 'validation'
+    : 'conflict';
+  return new UseCaseError(reason, message);
+}
+
+/**
+ * Reopens a satisfied Requirement from a completed Stage as a correction. All validation happens
+ * atomically inside the reopen_requirement RPC (Task 4) — this function only calls it and returns
+ * the new requirement's id.
+ */
+export async function reopenRequirement(client: DbClient, requirementId: string, reason: string): Promise<string> {
+  const { data, error } = await client.rpc('reopen_requirement', { p_requirement_id: requirementId, p_reason: reason });
+  if (error) throw mapReopenRequirementError(error);
+  return data!;
+}
+
+const ASSIGN_STAGE_MESSAGES: Record<string, string> = {
+  requirement_not_found: 'Ese requisito ya no existe.',
+  not_authorized: 'No tienes permiso para asignar este requisito.',
+  requirement_already_assigned: 'Este requisito ya tiene una etapa asignada.',
+  reopened_requirement_cannot_move: 'No se puede reasignar un requisito reabierto.',
+  stage_not_found: 'Esa etapa no existe en este expediente.',
+  stage_not_active: 'Solo se puede asignar a la etapa activa.',
+};
+
+function mapAssignStageError(error: PostgrestError): UseCaseError {
+  const message = ASSIGN_STAGE_MESSAGES[error.message];
+  if (!message) return new UseCaseError('unexpected', 'No pudimos asignar el requisito. Intenta de nuevo.');
+  const reason =
+    error.message === 'not_authorized' ? 'forbidden'
+    : error.message === 'requirement_not_found' || error.message === 'stage_not_found' ? 'not_found'
+    : 'conflict';
+  return new UseCaseError(reason, message);
+}
+
+/**
+ * Assigns a "Sin etapa" Requirement to the Case's currently active Stage. All validation happens
+ * atomically inside the assign_requirement_stage RPC (Task 5) — this function only calls it.
+ */
+export async function assignRequirementStage(client: DbClient, requirementId: string, stageId: string): Promise<void> {
+  const { error } = await client.rpc('assign_requirement_stage', { p_requirement_id: requirementId, p_stage_id: stageId });
+  if (error) throw mapAssignStageError(error);
+}
+
 export async function addRequirement(
   client: DbClient,
   input: z.input<typeof addRequirementSchema>,

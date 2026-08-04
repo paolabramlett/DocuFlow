@@ -20,6 +20,7 @@ const closedCase: CaseView = {
   opened: '1 ene 2026',
   state: 'completed',
   participants: [],
+  stages: [],
 };
 
 describe('ClosureBanner — reopen() branching on requiresReinvitation/notificationFailureCount (NOTE(#65))', () => {
