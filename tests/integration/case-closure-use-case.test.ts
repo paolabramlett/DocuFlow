@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { buildOrganizationWorld, grantVerifiedAccess, type OrganizationWorld } from '../helpers/fixtures';
+import { addParticipant, buildOrganizationWorld, grantVerifiedAccess, type OrganizationWorld } from '../helpers/fixtures';
 import { adminClient } from '../helpers/clients';
 import { closeCase, reopenCase } from '@/features/cases/cases';
 
@@ -93,5 +93,48 @@ describe('closeCase / reopenCase', () => {
     expect(result.restoredParticipantIds).toEqual([world.participantId]);
     const reissueCalls = rpcSpy.mock.calls.filter(([name]) => name === 'emit_participant_invitation');
     expect(reissueCalls).toHaveLength(1);
+  });
+
+  it('one restored Participant failing to notify does not strand the others', async () => {
+    const world = await buildOrganizationWorld({
+      name: 'Notaría UseCase Reopen PartialFail',
+      industry: 'notary',
+      clientEmail: `usecase-reopen-partial-a-${randomUUID()}@example.test`,
+    });
+    const second = await addParticipant(world, {
+      roleLabel: 'Segundo',
+      clientEmail: `usecase-reopen-partial-b-${randomUUID()}@example.test`,
+    });
+    await completeAllRequirements(world);
+    const firstGrant = await grantVerifiedAccess({ world, permission: 'upload' });
+    const secondGrant = await grantVerifiedAccess({
+      world,
+      participantId: second.participantId,
+      clientId: second.clientId,
+      existingEmail: second.clientEmail,
+      permission: 'upload',
+    });
+    await closeCase(world.staff.client, world.caseId, 'completed', undefined);
+
+    // Fails for whichever Participant is notified first, succeeds for the second — proving the
+    // loop reaches every restored Participant instead of stopping at the first failure.
+    const sendEmail = vi.fn().mockRejectedValueOnce(new Error('delivery failed')).mockResolvedValueOnce(undefined);
+    vi.spyOn(await import('@/lib/email/resend'), 'sendTransactionalEmail').mockImplementation(sendEmail);
+
+    const result = await reopenCase(world.staff.client, world.caseId);
+
+    expect(result.restoredParticipantIds.sort()).toEqual([world.participantId, second.participantId].sort());
+    expect(result.notificationFailureCount).toBe(1);
+    // Both Participants were actually attempted — the failure on the first call didn't stop the
+    // loop from reaching the second.
+    expect(sendEmail).toHaveBeenCalledTimes(2);
+
+    // Restoration itself (permission/expiry) never depends on whether the email succeeded — both
+    // grants come back to 'upload' regardless of which one failed to notify.
+    const { data: grants } = await adminClient()
+      .from('case_access_grants')
+      .select('id, permission')
+      .in('id', [firstGrant.grantId, secondGrant.grantId]);
+    expect(grants?.every((g) => g.permission === 'upload')).toBe(true);
   });
 });
