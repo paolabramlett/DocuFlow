@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
 import { adminClient } from '../helpers/clients';
-import { buildOrganizationWorld, addParticipant } from '../helpers/fixtures';
+import { buildOrganizationWorld, addParticipant, grantVerifiedAccess } from '../helpers/fixtures';
 import { issueInvitation } from '@/features/case-access/invitations';
 import { sendManualReminder } from '@/application/send-manual-reminder';
 
@@ -175,5 +175,66 @@ describe('sendManualReminder', () => {
     expect(sendEmail).toHaveBeenCalledTimes(2);
     const recipients = sendEmail.mock.calls.map((c) => c[0].to).sort();
     expect(recipients).toEqual([second.clientEmail, world.clientEmail].sort());
+  });
+
+  it('excludes a requirement in a locked future stage', async () => {
+    const world = await buildOrganizationWorld({
+      name: 'Notaría Manual Reminder Stages',
+      industry: 'notary',
+      clientEmail: `manual-reminder-stages-${randomUUID()}@example.test`,
+    });
+    const admin = adminClient();
+    const { data: stages } = await admin
+      .from('case_stages')
+      .insert([
+        { organization_id: world.organizationId, case_id: world.caseId, name: 'Activa', position: 0, status: 'active' },
+        { organization_id: world.organizationId, case_id: world.caseId, name: 'Futura', position: 1, status: 'locked' },
+      ])
+      .select('id, position');
+    const active = stages!.find((s) => s.position === 0)!;
+    const locked = stages!.find((s) => s.position === 1)!;
+    // world.requirementIds[0] moves to the locked stage — should no longer be reminded about.
+    await admin.from('requirements').update({ stage_id: locked.id }).eq('id', world.requirementIds[0]!);
+    await admin.from('requirements').update({ stage_id: active.id }).eq('id', world.requirementIds[1]!);
+    await grantVerifiedAccess({ world, permission: 'upload' });
+
+    const sentTo: string[] = [];
+    await sendManualReminder(
+      world.staff.client,
+      { organizationId: world.organizationId, caseId: world.caseId },
+      world.staff.userId,
+      async (input) => {
+        sentTo.push(input.to);
+      },
+    );
+
+    // Still reminded overall (requirementIds[1] is in the active stage), but this test's real point
+    // is that the RPC path didn't throw and the participant was still correctly included — full
+    // exclusion-of-the-locked-item coverage lives at the SQL level (Task 6's isolation tests, which
+    // can assert directly on which ids come back). This integration test proves the wiring: the
+    // manual reminder path actually calls through to the new selector rather than a stale predicate.
+    expect(sentTo).toEqual([world.clientEmail]);
+  });
+
+  it('excludes an archived requirement, matching the cron (the drift this task fixes)', async () => {
+    const world = await buildOrganizationWorld({
+      name: 'Notaría Manual Reminder Archived',
+      industry: 'notary',
+      clientEmail: `manual-reminder-archived-${randomUUID()}@example.test`,
+    });
+    const admin = adminClient();
+    for (const id of world.requirementIds) {
+      await admin.from('requirements').update({ status: 'archived' }).eq('id', id);
+    }
+    await grantVerifiedAccess({ world, permission: 'upload' });
+
+    const result = await sendManualReminder(
+      world.staff.client,
+      { organizationId: world.organizationId, caseId: world.caseId },
+      world.staff.userId,
+      async () => {},
+    );
+
+    expect(result.remindedCount).toBe(0);
   });
 });

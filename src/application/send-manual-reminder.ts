@@ -28,9 +28,10 @@ export interface SendManualReminderResult {
  * for this behavior — an on-demand nudge that doesn't wait for or count against the cadence-driven
  * reminders in app.select_due_reminders()).
  *
- * "Outstanding" matches the automatic reminder system's own definition exactly (status <>
- * 'satisfied', not deleted/superseded) — the manual and automatic paths must agree on who needs a
- * nudge, even though only this one bypasses the cadence timing.
+ * "Outstanding" is resolved through app.actionable_requirement_ids (via the
+ * list_actionable_requirement_ids RPC wrapper) — the same shared selector app.eligible_reminders()
+ * uses for the automatic cadence-driven path. The manual and automatic paths must agree on who
+ * needs a nudge, even though only this one bypasses the cadence timing.
  *
  * Each reminder rotates that participant's Portal credential via reissueParticipantInvitation
  * (features/case-access/invitations.ts) — the same reissue path the reminder cron uses via the
@@ -58,7 +59,7 @@ export async function sendManualReminder(
   const { data: participants, error: participantsError } = await client
     .from("case_participants")
     .select(
-      "id, requirements(id, status, deleted_at, superseded_at), grants:case_access_grants(id, revoked_at, permission, invited_email)",
+      "id, grants:case_access_grants(id, revoked_at, permission, invited_email)",
     )
     .eq("case_id", caseId)
     .eq("organization_id", organizationId);
@@ -70,10 +71,14 @@ export async function sendManualReminder(
   const failures: SendManualReminderResult["failures"] = [];
 
   for (const p of participants ?? []) {
-    const hasOutstanding = (p.requirements ?? []).some(
-      (r) => r.status !== "satisfied" && !r.deleted_at && !r.superseded_at,
+    const { data: actionableIds, error: actionableError } = await client.rpc(
+      "list_actionable_requirement_ids",
+      { p_participant_id: p.id },
     );
-    if (!hasOutstanding) continue;
+    if (actionableError) {
+      throw new Error(`Could not resolve actionable requirements: ${actionableError.message}`);
+    }
+    if (!actionableIds || actionableIds.length === 0) continue;
 
     // A revoked or explicitly no-access grant is not "forgot to check their email" — nothing to
     // remind them about. A participant with no grant at all was never even invited; that's a

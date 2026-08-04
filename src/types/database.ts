@@ -1123,6 +1123,10 @@ export type Database = {
           token: string
         }[]
       }
+      list_actionable_requirement_ids: {
+        Args: { p_participant_id: string }
+        Returns: string[]
+      }
       org_members_with_email: {
         Args: { target_organization_id: string }
         Returns: {

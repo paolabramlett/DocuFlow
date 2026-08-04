@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { addStaffMember, adminClient, createOrganizationWithOwner } from '../helpers/clients';
 import { grantVerifiedAccess } from '../helpers/fixtures';
+import { withDb } from '../helpers/db';
 
 describe('case stages workflow: schema', () => {
   it('case_stages.status defaults to locked and rejects an invalid value', async () => {
@@ -739,5 +740,90 @@ describe('assign_requirement_stage', () => {
       p_stage_id: w.stageIds[0]!,
     });
     expect(error?.message).toBe('requirement_not_found');
+  });
+});
+
+describe('app.actionable_requirement_ids', () => {
+  it('a Case with no stages: every outstanding, non-deleted, non-superseded requirement is actionable', async () => {
+    const w = await buildStagedCase({ name: 'Notaría Actionable NoStages', stageCount: 0 });
+    const { data: req } = await adminClient()
+      .from('requirements')
+      .insert({
+        organization_id: w.organizationId, case_id: w.caseId, participant_id: w.participantId,
+        stage_id: null, type: 'document', label: 'Flat', position: 0,
+      })
+      .select('id')
+      .single();
+
+    const ids = await withDb((db) =>
+      db.query('select id from app.actionable_requirement_ids($1) as id', [w.participantId]).then((r) => r.rows.map((row: { id: string }) => row.id)),
+    );
+    expect(ids).toContain(req!.id);
+  });
+
+  it('excludes a requirement in a locked future stage', async () => {
+    const w = await buildStagedCase({ name: 'Notaría Actionable Locked', stageCount: 2 });
+    const ids = await withDb((db) =>
+      db.query('select id from app.actionable_requirement_ids($1) as id', [w.participantId]).then((r) => r.rows.map((row: { id: string }) => row.id)),
+    );
+    expect(ids).toContain(w.requirementIds[0]); // active stage
+    expect(ids).not.toContain(w.requirementIds[1]); // locked stage
+  });
+
+  it('includes a reopened requirement pending in a completed stage', async () => {
+    const w = await buildStagedCase({ name: 'Notaría Actionable Reopened', stageCount: 1 });
+    await adminClient().from('requirements').update({ status: 'satisfied' }).eq('id', w.requirementIds[0]!);
+    await adminClient().from('case_stages').update({ status: 'completed' }).eq('id', w.stageIds[0]!);
+    // reopen_requirement is called via the authenticated staff client, matching every other call
+    // to this RPC in this file — a raw withDb connection has no auth.uid()/RLS session and the RPC
+    // rejects with not_authorized without one.
+    const { data: newId, error } = await w.staff.client.rpc('reopen_requirement', {
+      p_requirement_id: w.requirementIds[0]!,
+      p_reason: 'Motivo',
+    });
+    expect(error).toBeNull();
+
+    const ids = await withDb((db) =>
+      db.query('select id from app.actionable_requirement_ids($1) as id', [w.participantId]).then((r) => r.rows.map((row: { id: string }) => row.id)),
+    );
+    expect(ids).toContain(newId);
+    expect(ids).not.toContain(w.requirementIds[0]); // original is now archived+superseded
+  });
+
+  it('excludes an archived-but-not-deleted requirement (the drift bug this task fixes)', async () => {
+    const w = await buildStagedCase({ name: 'Notaría Actionable Archived', stageCount: 0 });
+    await adminClient().from('requirements').update({ status: 'archived' }).eq('id', w.requirementIds[0]!);
+
+    const ids = await withDb((db) =>
+      db.query('select id from app.actionable_requirement_ids($1) as id', [w.participantId]).then((r) => r.rows.map((row: { id: string }) => row.id)),
+    );
+    expect(ids).not.toContain(w.requirementIds[0]);
+  });
+
+  it('includes a legacy stageless requirement in a Case that otherwise has stages', async () => {
+    const w = await buildStagedCase({ name: 'Notaría Actionable SinEtapa', stageCount: 1 });
+    const { data: bare } = await adminClient()
+      .from('requirements')
+      .insert({
+        organization_id: w.organizationId, case_id: w.caseId, participant_id: w.participantId,
+        stage_id: null, type: 'document', label: 'Sin etapa', position: 1,
+      })
+      .select('id')
+      .single();
+
+    const ids = await withDb((db) =>
+      db.query('select id from app.actionable_requirement_ids($1) as id', [w.participantId]).then((r) => r.rows.map((row: { id: string }) => row.id)),
+    );
+    expect(ids).toContain(bare!.id);
+  });
+
+  it('excludes a deleted or superseded requirement even in the active stage', async () => {
+    const w = await buildStagedCase({ name: 'Notaría Actionable DeletedSuperseded', stageCount: 1 });
+    await adminClient().from('requirements').update({ deleted_at: new Date().toISOString() }).eq('id', w.requirementIds[0]!);
+
+    const ids = await withDb((db) =>
+      db.query('select id from app.actionable_requirement_ids($1) as id', [w.participantId]).then((r) => r.rows.map((row: { id: string }) => row.id)),
+    );
+    expect(ids).not.toContain(w.requirementIds[0]);
   });
 });
