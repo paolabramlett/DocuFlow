@@ -174,14 +174,12 @@ function ParticipantColumn({ p, caseOpen }: { p: ParticipantView; caseOpen: bool
   );
 }
 
-// NOTE (deliberate, not an oversight): `caseOpen` gating approve/reject here is UX only — the
-// real authority is decideReview's server-side `cases.state === 'open'` check
-// (src/features/documents/documents.ts), which rejects the same operation regardless of how it's
-// invoked. This component has no automated test: this repo has no component-testing
-// infrastructure (jsdom/@testing-library/react) today, and adding one was explicitly deferred as
-// its own decision rather than bundled into this fix. Verified manually only. See
-// docs/superpowers/plans/2026-08-03-case-closure-plan.md and task #64 in the session's task list.
-function RequirementRow({ r, caseOpen }: { r: RequirementView; caseOpen: boolean }) {
+// NOTE(#65): Component behavior verified manually only — no RTL/jsdom coverage yet.
+// `caseOpen` gating approve/reject here is UX only; the real authority is decideReview's
+// server-side `cases.state === 'open'` check (src/features/documents/documents.ts), which
+// rejects the same operation regardless of how it's invoked. Add automated coverage once
+// component-testing infrastructure exists (task #65).
+export function RequirementRow({ r, caseOpen }: { r: RequirementView; caseOpen: boolean }) {
   const m = REQ[r.state];
   const [busy, setBusy] = useState<"approve" | "reject" | "view" | null>(null);
   const [rejecting, setRejecting] = useState(false);
@@ -444,15 +442,14 @@ function formatClosedAt(iso: string): string {
   });
 }
 
-// NOTE (deliberate, not an oversight): `reopen()`'s branching on `requiresReinvitation` /
-// `notificationFailureCount` — the exact values reopenCaseAction forwards from reopenCase — has no
-// automated test at this render level, for the same reason as RequirementRow above (no
-// component-testing infrastructure in this repo). The layer below it IS covered:
-// tests/integration/reopen-case-action.test.ts asserts reopenCaseAction forwards both fields
-// verbatim, and tests/integration/case-closure-use-case.test.ts asserts reopenCase itself computes
-// notificationFailureCount correctly when one Participant's notification fails. Only this
-// component's consumption of that already-verified value is unverified by automated means.
-function ClosureBanner({ c, onReopened }: { c: CaseView; onReopened: (msg: string | null) => void }) {
+// NOTE(#65): Component behavior verified manually only — no RTL/jsdom coverage yet.
+// `reopen()`'s branching on `requiresReinvitation`/`notificationFailureCount` — the exact values
+// reopenCaseAction forwards from reopenCase — has no test at this render level. The layer below
+// IS covered: tests/integration/reopen-case-action.test.ts asserts reopenCaseAction forwards both
+// fields verbatim, and tests/integration/case-closure-use-case.test.ts asserts reopenCase itself
+// computes notificationFailureCount correctly. Add render-level coverage once component-testing
+// infrastructure exists (task #65).
+export function ClosureBanner({ c, onReopened }: { c: CaseView; onReopened: (msg: string | null) => void }) {
   const [reopening, setReopening] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const router = useRouter();
