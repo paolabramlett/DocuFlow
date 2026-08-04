@@ -1061,6 +1061,12 @@ export type Database = {
       }
     }
     Functions: {
+      advance_case_stage: {
+        Args: { p_case_id: string }
+        Returns: {
+          participant_id: string
+        }[]
+      }
       claim_signup_attempt: {
         Args: { cooldown_seconds: number; signup_email: string }
         Returns: boolean
