@@ -21,6 +21,10 @@ begin
 
   select * into v_req from public.requirements where id = p_requirement_id for update;
 
+  if v_req.deleted_at is not null then
+    raise exception using errcode = 'P0001', message = 'requirement_not_found';
+  end if;
+
   if v_req.stage_id is not null then
     raise exception using errcode = 'P0001', message = 'requirement_already_assigned';
   end if;

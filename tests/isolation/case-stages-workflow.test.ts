@@ -671,7 +671,7 @@ describe('assign_requirement_stage', () => {
     expect(error?.message).toBe('reopened_requirement_cannot_move');
   });
 
-  it('tenant isolation: a Staff member of another org cannot assign', async () => {
+  it('an org outsider gets requirement_not_found: RLS hides the row entirely', async () => {
     const w = await buildStagedCase({ name: 'Notaría Assign TenantA', stageCount: 1 });
     const other = await createOrganizationWithOwner('Notaría Assign TenantB', 'notary');
     const { data: bare } = await adminClient()
@@ -688,11 +688,56 @@ describe('assign_requirement_stage', () => {
       p_stage_id: w.stageIds[0]!,
     });
     // The requirements_select RLS policy only allows organization_id in member_org_ids() (or a
-    // view grant on the case, neither of which other.owner has here), so the RPC's own initial
+    // participant grant, neither of which other.owner has here), so the RPC's own initial
     // plain SELECT sees zero rows before the explicit `v_org_id not in member_org_ids()` check
     // ever runs. requirement_not_found (not not_authorized) is therefore the actual, correct
     // outcome for a caller with no relationship at all to the row — it also avoids confirming to
     // an outsider that a requirement with this id exists in some other org.
+    expect(error?.message).toBe('requirement_not_found');
+  });
+
+  it('a Client cannot call assign_requirement_stage', async () => {
+    const w = await buildStagedCase({ name: 'Notaría Assign Client', stageCount: 1 });
+    const { data: bare } = await adminClient()
+      .from('requirements')
+      .insert({
+        organization_id: w.organizationId, case_id: w.caseId, participant_id: w.participantId,
+        stage_id: null, type: 'document', label: 'Sin etapa', position: 1,
+      })
+      .select('id')
+      .single();
+    const granted = await grantVerifiedAccess({
+      world: {
+        organizationId: w.organizationId, owner: w.owner, staff: w.staff, clientId: w.clientId, clientEmail: w.clientEmail,
+        blueprintId: '', caseId: w.caseId, participantId: w.participantId, requirementIds: w.requirementIds,
+      },
+      permission: 'view',
+    });
+
+    const { error } = await granted.client.rpc('assign_requirement_stage', {
+      p_requirement_id: bare!.id,
+      p_stage_id: w.stageIds[0]!,
+    });
+    expect(error?.message).toBe('not_authorized');
+  });
+
+  it('rejects assigning a requirement that has been soft-deleted', async () => {
+    const w = await buildStagedCase({ name: 'Notaría Assign SoftDeleted', stageCount: 1 });
+    const admin = adminClient();
+    const { data: bare } = await admin
+      .from('requirements')
+      .insert({
+        organization_id: w.organizationId, case_id: w.caseId, participant_id: w.participantId,
+        stage_id: null, type: 'document', label: 'Sin etapa', position: 1,
+      })
+      .select('id')
+      .single();
+    await admin.from('requirements').update({ deleted_at: new Date().toISOString() }).eq('id', bare!.id);
+
+    const { error } = await w.staff.client.rpc('assign_requirement_stage', {
+      p_requirement_id: bare!.id,
+      p_stage_id: w.stageIds[0]!,
+    });
     expect(error?.message).toBe('requirement_not_found');
   });
 });
