@@ -75,8 +75,11 @@ export async function reviewDocument(
     await decideReview(client, parsed, actorAuthUserId);
   } catch (cause) {
     const message = cause instanceof Error ? cause.message : "";
-    if (message.includes("No such document")) {
+    if (message.includes("No such document") || message.includes("No such case")) {
       throw new UseCaseError("not_found", "Ese documento ya no está disponible.");
+    }
+    if (message.includes("Case is not open")) {
+      throw new UseCaseError("conflict", "Este expediente ya está cerrado — no se pueden revisar documentos.");
     }
     throw new UseCaseError(
       "forbidden",

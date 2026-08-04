@@ -5,6 +5,7 @@ import { buildOrganizationWorld, grantVerifiedAccess } from '../helpers/fixtures
 import { registerDocument } from '@/features/documents/documents';
 import { issueInvitation } from '@/features/case-access/invitations';
 import { reviewDocument } from '@/application/review-document';
+import { closeCase } from '@/features/cases/cases';
 
 async function worldWithUploadedDocument(label: string) {
   const world = await buildOrganizationWorld({
@@ -141,5 +142,24 @@ describe('reviewDocument — action-required notification', () => {
       reviewDocument(world.staff.client, { documentId: uploaded.documentId, decision: 'rejected', reason: 'x' }, world.staff.userId, sendEmail),
     ).resolves.toBeUndefined();
     expect(sendEmail).not.toHaveBeenCalled();
+  });
+});
+
+describe('reviewDocument — server-side Case-state gate', () => {
+  it('rejects reviewing a document on a closed Case, even calling the use case directly', async () => {
+    const { world, documentId } = await worldWithUploadedDocument('closed-gate');
+    const sendEmail = vi.fn().mockResolvedValue(undefined);
+
+    // 'cancelled' is used here rather than 'completed' specifically because it needs no
+    // documentation-completeness precondition — this test only cares that the Case is closed by
+    // the time the second review is attempted, not which terminal outcome it reached.
+    await closeCase(world.staff.client, world.caseId, 'cancelled', 'Cierre de prueba del gate de revisión.');
+
+    // Attempting another decision on the same Document once the Case is closed — simulating a
+    // stale tab or a direct call that bypasses the UI's own gating — must be rejected server-side,
+    // never reaching the point of inserting a second review row.
+    await expect(
+      reviewDocument(world.staff.client, { documentId, decision: 'approved' }, world.staff.userId, sendEmail),
+    ).rejects.toMatchObject({ reason: 'conflict' });
   });
 });

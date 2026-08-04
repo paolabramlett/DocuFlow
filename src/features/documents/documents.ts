@@ -178,6 +178,22 @@ export async function decideReview(
   if (readError) throw new Error(`Could not read document: ${readError.message}`);
   if (!document) throw new Error('No such document');
 
+  // Server-side authority for the same rule the Staff UI already enforces visually: once a Case
+  // is closed, reviewing a Document is no longer a valid operation, regardless of how the call
+  // arrived (a stale tab, a direct Server Action invocation, or any future caller that skips the
+  // UI). close_case is the only place a Case leaves 'open', so this check can never race a
+  // concurrent closure into a false negative — at worst it rejects a review that started a moment
+  // before closure completed, which is the correct, conservative outcome.
+  const { data: caseRow, error: caseError } = await client
+    .from('cases')
+    .select('state')
+    .eq('id', document.case_id)
+    .maybeSingle();
+
+  if (caseError) throw new Error(`Could not read case: ${caseError.message}`);
+  if (!caseRow) throw new Error('No such case');
+  if (caseRow.state !== 'open') throw new Error('Case is not open');
+
   const { error } = await client.from('reviews').insert({
     organization_id: document.organization_id,
     case_id: document.case_id,
