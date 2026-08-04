@@ -1067,6 +1067,10 @@ export type Database = {
           participant_id: string
         }[]
       }
+      assign_requirement_stage: {
+        Args: { p_requirement_id: string; p_stage_id: string }
+        Returns: undefined
+      }
       claim_signup_attempt: {
         Args: { cooldown_seconds: number; signup_email: string }
         Returns: boolean

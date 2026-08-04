@@ -573,3 +573,126 @@ describe('reopen_requirement', () => {
     expect(events?.[0]?.metadata).toEqual({ original_requirement_id: w.requirementIds[0], reason: 'Motivo de auditoría' });
   });
 });
+
+describe('assign_requirement_stage', () => {
+  it('assigns an unassigned requirement to the active stage', async () => {
+    const w = await buildStagedCase({ name: 'Notaría Assign Basic', stageCount: 1 });
+    const { data: bare } = await adminClient()
+      .from('requirements')
+      .insert({
+        organization_id: w.organizationId, case_id: w.caseId, participant_id: w.participantId,
+        stage_id: null, type: 'document', label: 'Sin etapa', position: 1,
+      })
+      .select('id')
+      .single();
+
+    const { error } = await w.staff.client.rpc('assign_requirement_stage', {
+      p_requirement_id: bare!.id,
+      p_stage_id: w.stageIds[0]!,
+    });
+    expect(error).toBeNull();
+
+    const { data: after } = await adminClient().from('requirements').select('stage_id').eq('id', bare!.id).single();
+    expect(after?.stage_id).toBe(w.stageIds[0]);
+  });
+
+  it('rejects a target stage that is locked', async () => {
+    const w = await buildStagedCase({ name: 'Notaría Assign Locked', stageCount: 2 });
+    const { data: bare } = await adminClient()
+      .from('requirements')
+      .insert({
+        organization_id: w.organizationId, case_id: w.caseId, participant_id: w.participantId,
+        stage_id: null, type: 'document', label: 'Sin etapa', position: 2,
+      })
+      .select('id')
+      .single();
+
+    const { error } = await w.staff.client.rpc('assign_requirement_stage', {
+      p_requirement_id: bare!.id,
+      p_stage_id: w.stageIds[1]!, // locked (position 1, not yet active)
+    });
+    expect(error?.message).toBe('stage_not_active');
+  });
+
+  it('rejects a target stage that is completed', async () => {
+    const w = await buildStagedCase({ name: 'Notaría Assign Completed', stageCount: 2 });
+    await adminClient().from('case_stages').update({ status: 'completed' }).eq('id', w.stageIds[0]!);
+    const { data: bare } = await adminClient()
+      .from('requirements')
+      .insert({
+        organization_id: w.organizationId, case_id: w.caseId, participant_id: w.participantId,
+        stage_id: null, type: 'document', label: 'Sin etapa', position: 2,
+      })
+      .select('id')
+      .single();
+
+    const { error } = await w.staff.client.rpc('assign_requirement_stage', {
+      p_requirement_id: bare!.id,
+      p_stage_id: w.stageIds[0]!,
+    });
+    expect(error?.message).toBe('stage_not_active');
+  });
+
+  it('rejects a requirement that already has a stage', async () => {
+    const w = await buildStagedCase({ name: 'Notaría Assign AlreadySet', stageCount: 1 });
+
+    const { error } = await w.staff.client.rpc('assign_requirement_stage', {
+      p_requirement_id: w.requirementIds[0]!,
+      p_stage_id: w.stageIds[0]!,
+    });
+    expect(error?.message).toBe('requirement_already_assigned');
+  });
+
+  it('rejects reassigning a reopened requirement', async () => {
+    const w = await buildStagedCase({ name: 'Notaría Assign Reopened', stageCount: 1 });
+    await adminClient().from('requirements').update({ status: 'satisfied' }).eq('id', w.requirementIds[0]!);
+    await adminClient().from('case_stages').update({ status: 'completed' }).eq('id', w.stageIds[0]!);
+    const { data: newId } = await w.staff.client.rpc('reopen_requirement', {
+      p_requirement_id: w.requirementIds[0]!,
+      p_reason: 'Motivo',
+    });
+    // Force stage_id to null on the reopened row to exercise the guard directly (reopen_requirement
+    // itself never produces a null stage_id, but the guard must hold regardless of how one arose).
+    await adminClient().from('requirements').update({ stage_id: null }).eq('id', newId!);
+    await adminClient().from('case_stages').insert({
+      organization_id: w.organizationId, case_id: w.caseId, name: 'Etapa 2', position: 1, status: 'active',
+    });
+
+    const { data: activeStage } = await adminClient()
+      .from('case_stages')
+      .select('id')
+      .eq('case_id', w.caseId)
+      .eq('status', 'active')
+      .single();
+    const { error } = await w.staff.client.rpc('assign_requirement_stage', {
+      p_requirement_id: newId!,
+      p_stage_id: activeStage!.id,
+    });
+    expect(error?.message).toBe('reopened_requirement_cannot_move');
+  });
+
+  it('tenant isolation: a Staff member of another org cannot assign', async () => {
+    const w = await buildStagedCase({ name: 'Notaría Assign TenantA', stageCount: 1 });
+    const other = await createOrganizationWithOwner('Notaría Assign TenantB', 'notary');
+    const { data: bare } = await adminClient()
+      .from('requirements')
+      .insert({
+        organization_id: w.organizationId, case_id: w.caseId, participant_id: w.participantId,
+        stage_id: null, type: 'document', label: 'Sin etapa', position: 1,
+      })
+      .select('id')
+      .single();
+
+    const { error } = await other.owner.client.rpc('assign_requirement_stage', {
+      p_requirement_id: bare!.id,
+      p_stage_id: w.stageIds[0]!,
+    });
+    // The requirements_select RLS policy only allows organization_id in member_org_ids() (or a
+    // view grant on the case, neither of which other.owner has here), so the RPC's own initial
+    // plain SELECT sees zero rows before the explicit `v_org_id not in member_org_ids()` check
+    // ever runs. requirement_not_found (not not_authorized) is therefore the actual, correct
+    // outcome for a caller with no relationship at all to the row — it also avoids confirming to
+    // an outsider that a requirement with this id exists in some other org.
+    expect(error?.message).toBe('requirement_not_found');
+  });
+});
