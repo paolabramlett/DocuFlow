@@ -132,6 +132,7 @@ export type Database = {
       blueprint_stages: {
         Row: {
           blueprint_id: string
+          completion_mode: string
           created_at: string
           id: string
           name: string
@@ -140,6 +141,7 @@ export type Database = {
         }
         Insert: {
           blueprint_id: string
+          completion_mode?: string
           created_at?: string
           id?: string
           name: string
@@ -148,6 +150,7 @@ export type Database = {
         }
         Update: {
           blueprint_id?: string
+          completion_mode?: string
           created_at?: string
           id?: string
           name?: string
@@ -363,28 +366,43 @@ export type Database = {
       }
       case_stages: {
         Row: {
+          activated_at: string | null
           case_id: string
+          completed_at: string | null
+          completed_by_auth_user_id: string | null
+          completion_mode: string
           created_at: string
           id: string
           name: string
           organization_id: string
           position: number
+          status: string
         }
         Insert: {
+          activated_at?: string | null
           case_id: string
+          completed_at?: string | null
+          completed_by_auth_user_id?: string | null
+          completion_mode?: string
           created_at?: string
           id?: string
           name: string
           organization_id: string
           position: number
+          status?: string
         }
         Update: {
+          activated_at?: string | null
           case_id?: string
+          completed_at?: string | null
+          completed_by_auth_user_id?: string | null
+          completion_mode?: string
           created_at?: string
           id?: string
           name?: string
           organization_id?: string
           position?: number
+          status?: string
         }
         Relationships: [
           {
@@ -735,6 +753,8 @@ export type Database = {
           organization_id: string
           participant_id: string | null
           position: number
+          reopen_reason: string | null
+          reopened_from_requirement_id: string | null
           stage_id: string | null
           status: string
           superseded_at: string | null
@@ -753,6 +773,8 @@ export type Database = {
           organization_id: string
           participant_id?: string | null
           position: number
+          reopen_reason?: string | null
+          reopened_from_requirement_id?: string | null
           stage_id?: string | null
           status?: string
           superseded_at?: string | null
@@ -771,6 +793,8 @@ export type Database = {
           organization_id?: string
           participant_id?: string | null
           position?: number
+          reopen_reason?: string | null
+          reopened_from_requirement_id?: string | null
           stage_id?: string | null
           status?: string
           superseded_at?: string | null
@@ -799,6 +823,20 @@ export type Database = {
             isOneToOne: false
             referencedRelation: "case_participants"
             referencedColumns: ["id", "case_id", "organization_id"]
+          },
+          {
+            foreignKeyName: "requirements_reopened_from_requirement_id_fkey"
+            columns: ["reopened_from_requirement_id"]
+            isOneToOne: false
+            referencedRelation: "active_requirements"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "requirements_reopened_from_requirement_id_fkey"
+            columns: ["reopened_from_requirement_id"]
+            isOneToOne: false
+            referencedRelation: "requirements"
+            referencedColumns: ["id"]
           },
           {
             foreignKeyName: "requirements_stage_fk"
