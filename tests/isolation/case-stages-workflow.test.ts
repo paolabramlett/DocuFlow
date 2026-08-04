@@ -246,31 +246,107 @@ describe('advance_case_stage', () => {
     expect(data).toHaveLength(0);
   });
 
-  it('serializes two concurrent advance calls on the same Case — the second sees the new state', async () => {
+  it('a race on the same Case serializes: exactly one advance succeeds, the loser gets a stable error, no stage is skipped', async () => {
     const w = await buildStagedCase({ name: 'Notaría Advance Concurrent', stageCount: 3 });
     await adminClient().from('requirements').update({ status: 'satisfied' }).eq('id', w.requirementIds[0]!);
-    await adminClient().from('requirements').update({ status: 'satisfied' }).eq('id', w.requirementIds[1]!);
+    // Deliberately leave w.requirementIds[1] (stage 2's requirement) outstanding — this makes the
+    // race deterministic: exactly one advance_case_stage call can ever legally succeed, regardless
+    // of which of the two concurrent calls the row lock lets through first.
 
     const [a, b] = await Promise.all([
       w.staff.client.rpc('advance_case_stage', { p_case_id: w.caseId }),
       w.staff.client.rpc('advance_case_stage', { p_case_id: w.caseId }),
     ]);
-    // Exactly one of the two calls actually advances past stage 1 in this race (both target the
-    // stage that was active when they started); the loser either succeeds against the
-    // already-ready stage 2 too (if it re-reads after the winner committed) or fails
-    // stage_not_ready (if stage 2's own requirement was never satisfied) — the invariant this test
-    // protects is that no stage was ever skipped and the row lock actually serialized them, not a
-    // pinned outcome for which call "wins".
+
+    const results = [a, b];
+    const successes = results.filter((r) => r.error === null);
+    const failures = results.filter((r) => r.error !== null);
+    expect(successes).toHaveLength(1);
+    expect(failures).toHaveLength(1);
+    // The loser must fail with a stable P0001 code, never a raw Postgres lock-wait error leaking
+    // through — 'no_active_stage' is what a genuinely concurrent loser gets (its blocked FOR UPDATE
+    // re-reads the row post-commit, EvalPlanQual drops it since status is no longer 'active');
+    // 'stage_not_ready' would be what a request that arrived strictly after the winner committed
+    // gets instead (a real re-read of stage 2, which is not yet ready) — both are legitimate,
+    // stable outcomes depending on true scheduling, neither is a bug.
+    expect(['no_active_stage', 'stage_not_ready']).toContain(failures[0]!.error!.message);
+
+    // The teeth: exactly ONE advance actually happened, not zero and not two. A missing/removed
+    // FOR UPDATE lock would let both calls independently complete stage 1 and activate stage 2
+    // (case_stages_one_active_per_case only prevents two SIMULTANEOUSLY active rows, not two
+    // sequential complete-then-activate cycles) — this assertion catches that regression, which the
+    // old version of this test did not.
+    const { count } = await adminClient()
+      .from('audit_events')
+      .select('*', { count: 'exact', head: true })
+      .eq('case_id', w.caseId)
+      .eq('action', 'case.stage_advanced');
+    expect(count).toBe(1);
+
     const { data: stages } = await adminClient()
       .from('case_stages')
       .select('status')
       .eq('case_id', w.caseId)
       .order('position');
-    const activeCount = stages?.filter((s) => s.status === 'active').length ?? 0;
-    expect(activeCount).toBeLessThanOrEqual(1);
-    const completedCount = stages?.filter((s) => s.status === 'completed').length ?? 0;
-    expect(completedCount).toBeGreaterThanOrEqual(1);
-    expect([a.error, b.error].some((e) => e === null)).toBe(true);
+    expect(stages?.map((s) => s.status)).toEqual(['completed', 'active', 'locked']);
+  });
+
+  it('a requirements-mode stage whose visible requirement is archived (not satisfied) still blocks advancing', async () => {
+    const w = await buildStagedCase({ name: 'Notaría Advance ArchivedBlocks', stageCount: 2 });
+    await adminClient().from('requirements').update({ status: 'archived' }).eq('id', w.requirementIds[0]!);
+
+    const { error } = await w.staff.client.rpc('advance_case_stage', { p_case_id: w.caseId });
+    expect(error?.message).toBe('stage_not_ready');
+  });
+
+  it('rejects advancing when a reopened requirement from an earlier stage is still pending', async () => {
+    const w = await buildStagedCase({ name: 'Notaría Advance ReopenedPending', stageCount: 2 });
+    await adminClient().from('requirements').update({ status: 'satisfied' }).eq('id', w.requirementIds[0]!);
+    await adminClient().from('requirements').insert({
+      organization_id: w.organizationId,
+      case_id: w.caseId,
+      participant_id: w.participantId,
+      stage_id: w.stageIds[0],
+      type: 'document',
+      label: 'Corrección pendiente',
+      position: 1,
+      status: 'outstanding',
+      reopened_from_requirement_id: w.requirementIds[0],
+    });
+
+    const { error } = await w.staff.client.rpc('advance_case_stage', { p_case_id: w.caseId });
+    expect(error?.message).toBe('reopened_requirement_pending');
+  });
+
+  it('gate order: an unassigned requirement blocks even when a reopened one is ALSO pending', async () => {
+    const w = await buildStagedCase({ name: 'Notaría Advance GateOrder1', stageCount: 2 });
+    await adminClient().from('requirements').update({ status: 'satisfied' }).eq('id', w.requirementIds[0]!);
+    await adminClient().from('requirements').insert({
+      organization_id: w.organizationId, case_id: w.caseId, participant_id: w.participantId,
+      stage_id: w.stageIds[0], type: 'document', label: 'Reabierto', position: 1,
+      status: 'outstanding', reopened_from_requirement_id: w.requirementIds[0],
+    });
+    await adminClient().from('requirements').insert({
+      organization_id: w.organizationId, case_id: w.caseId, participant_id: w.participantId,
+      stage_id: null, type: 'document', label: 'Sin etapa', position: 2,
+    });
+
+    const { error } = await w.staff.client.rpc('advance_case_stage', { p_case_id: w.caseId });
+    expect(error?.message).toBe('unassigned_requirement_pending');
+  });
+
+  it('gate order: a reopened-pending requirement blocks even when the active stage is ALSO not ready', async () => {
+    const w = await buildStagedCase({ name: 'Notaría Advance GateOrder2', stageCount: 2 });
+    // requirementIds[0] (stage 1, active) is left outstanding — stage not ready — AND a reopened
+    // requirement is also pending. reopened_requirement_pending must win (fires before Gate 3).
+    await adminClient().from('requirements').insert({
+      organization_id: w.organizationId, case_id: w.caseId, participant_id: w.participantId,
+      stage_id: w.stageIds[0], type: 'document', label: 'Reabierto', position: 1,
+      status: 'outstanding', reopened_from_requirement_id: w.requirementIds[0],
+    });
+
+    const { error } = await w.staff.client.rpc('advance_case_stage', { p_case_id: w.caseId });
+    expect(error?.message).toBe('reopened_requirement_pending');
   });
 
   it('a Client cannot call advance_case_stage despite an active grant', async () => {

@@ -71,7 +71,13 @@ begin
   -- floor applies ONLY to 'requirements' mode, matching the design's "never auto-ready an empty
   -- requirements-mode stage" rule; a manual stage with zero requirements is legitimately ready by
   -- staff confirmation alone.
-  select count(*), count(*) filter (where r.status = 'outstanding')
+  -- Parity with close_case's own convention: block on "not satisfied" (count(*) filter (where
+  -- r.status <> 'satisfied')), not a positive match on 'outstanding'. requirements.status has three
+  -- real values (outstanding, satisfied, archived) — archived is NOT proof of completion, it still
+  -- counts as outstanding here, exactly as close_case treats it. A positive match on 'outstanding'
+  -- would let staff bypass "never auto-ready an empty requirements-mode stage" by archiving the one
+  -- requirement instead of leaving it outstanding.
+  select count(*), count(*) filter (where r.status <> 'satisfied')
     into v_visible_total, v_visible_outstanding
     from public.requirements r
    where r.stage_id = v_active.id
