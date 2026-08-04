@@ -78,6 +78,8 @@ alter table public.requirements
 
 No `reopened_at`/`reopened_by_auth_user_id` mutation on the original row — see §4. The new row's own `created_at` and `superseded_by_requirement_id`-style linkage (via `reopened_from_requirement_id`, symmetric to the existing `superseded_by_requirement_id`) are sufficient; who reopened it is recoverable from the audit event written by `reopen_requirement` (§5).
 
+`completion_mode` is cloned from the Blueprint when the Case is created (same clone step as `name`/`position`). From that point forward the Case owns its own copy permanently — a later edit to the Blueprint's `completion_mode` never propagates to an already-cloned `case_stages` row, exactly like every other already-established "Blueprint edits never affect existing Cases" rule in this schema.
+
 ## 4. Reopening a requirement — supersede, not status mutation (fix #1)
 
 **Problem with the original draft:** setting `status = outstanding` on an already-`satisfied` row leaves its approved review and document attached; `deriveState` (which trusts `status = satisfied` first) would show `outstanding` while the latest review still says `approved` — a direct contradiction, and a violation of the append-only discipline already established for `superseded_at`/`superseded_by_requirement_id`.
@@ -157,7 +159,7 @@ Only allowed when the original requirement's stage is `completed` and the origin
 
 - Active stage readiness by `completion_mode`:
   - `requirements`: every client-visible active requirement in the stage (`participant_id is not null, deleted_at is null, superseded_at is null`) is `status = 'satisfied'`, **and at least one exists**.
-  - `manual` (fix #3): **no client-visible requirement in the stage is currently `status = 'outstanding'`** (same non-empty-exempt check — a manual stage with zero requirements is trivially ready). `completion_mode: manual` changes *how readiness without client requirements is determined* (staff confirmation vs. requirement completion) — it never authorizes hiding pending client requirements. A manual stage that happens to accumulate client-visible requirements is gated exactly like a `requirements` stage on those.
+  - `manual` (fix #3): **no client-visible requirement in the stage is currently `status = 'outstanding'`** (same non-empty-exempt check — a manual stage with zero requirements is trivially ready). `completion_mode: manual` changes *how readiness without client requirements is determined* (staff confirmation vs. requirement completion) — it never authorizes hiding pending client requirements. Manual stages are intended primarily for internal Staff work with no client requirements at all (e.g. "Firma", "Revisión interna"); client-visible requirements are allowed on one, but the moment one exists it immediately participates in the same readiness rule as a `requirements`-mode stage — there is no separate "manual stages can ignore documents" carve-out.
 - No pending reopened requirement anywhere in the Case (`reopened_from_requirement_id is not null and status = 'outstanding'`).
 - No unassigned "Sin etapa" requirement pending in the Case (fix #4 — see §6.3): any `stage_id is null, participant_id is not null, status = 'outstanding', deleted_at is null, superseded_at is null` row blocks advancement until Staff resolves it via `assign_requirement_stage` or a normal review decision.
 
@@ -228,7 +230,7 @@ end;
 $$;
 ```
 
-If there's no next stage (last stage completed), the function simply doesn't activate anything further and returns no rows — no auto-close of the Case, matching decision 3's explicit separation from Case Closure.
+**Contract when there is no next stage:** `v_next.id` is `null`, the "activate next stage" block is skipped, and the final `return query` (`where r.stage_id = v_next.id`) matches zero rows since no requirement has a `null` `stage_id` equal to `v_next.id`. **The RPC returns an empty result set — never an error, never a null row.** The last stage still transitions to `completed` and the audit event is still written (`activated_stage_id: null`). No auto-close of the Case, matching decision 3's explicit separation from Case Closure.
 
 **Fix #5 — notification criterion tightened.** Original draft notified anyone with a *visible* requirement in the new stage. Corrected: only participants with a requirement that is *actionable* right now (`status = 'outstanding'`, client-visible, not deleted/superseded) in the newly-activated stage. A participant whose stage-2 requirement was already `satisfied` by legacy data, or whose next stage is `manual` with no client requirements at all, receives no email.
 
@@ -263,6 +265,16 @@ begin
 
   if v_req.stage_id is not null then
     raise exception using errcode = 'P0001', message = 'requirement_already_assigned';
+  end if;
+
+  -- A reopened requirement (reopened_from_requirement_id is not null) belongs, historically,
+  -- to the stage where the original problem occurred. Reassigning it would erase that fact —
+  -- if the stage was wrong, the original requirement should have been corrected before
+  -- reopening. This check is defensive: reopened requirements are always created with a
+  -- non-null stage_id (copied from the original, see reopen_requirement), so it should never
+  -- reach this branch in practice, but it keeps the invariant explicit rather than implicit.
+  if v_req.reopened_from_requirement_id is not null then
+    raise exception using errcode = 'P0001', message = 'reopened_requirement_cannot_move';
   end if;
 
   select * into v_stage from public.case_stages
@@ -351,6 +363,22 @@ This is deliberately distinct from the existing terminal-state ("expediente comp
 - "Recordar" is stage-contextual in its confirmation copy ("Recordar pendientes de {stage name}") but its underlying selection uses the same actionable-requirement source as everywhere else (§7) — it does not invent a stage-scoped variant of the predicate.
 - "Sin etapa" section per §6.3.
 
+### 10.1 Portal presentation of a reopened (earlier-stage) requirement — decided
+
+A reopened requirement never renders nested inside the current active stage's section, even though that's where the client will act on it next. It renders in its own, separate **"Correcciones pendientes"** section, positioned above the active stage's section:
+
+```
+Correcciones pendientes
+-----------------------
+INE comprador (Kick-Off)
+
+Etapa actual — Milestone 1
+---------------------------
+...
+```
+
+This is a data-model decision, not a styling one: mixing a reopened item into the active stage's list would visually claim it *belongs* to the current stage, which contradicts §4/decision 4 (the requirement's stage never changes — only a new corrective row is created, still tagged with its original, now-`completed`, stage). A dedicated section communicates what actually happened (a correction from a prior stage) and scales cleanly if more than one reopened item exists across different earlier stages at once — the alternative (nesting under the current stage) would blur that distinction and get harder to read as reopenings accumulate. Each item in "Correcciones pendientes" shows which stage it originally belonged to (e.g. "(Kick-Off)"), giving the client the same context Staff sees.
+
 ## 11. Testing plan — mapped to existing infra
 
 **Covered by existing jsdom+RTL infra (task #65)** — no new infrastructure needed:
@@ -362,7 +390,7 @@ This is deliberately distinct from the existing terminal-state ("expediente comp
 **Needs the existing `tests/integration/*` (node, real DB) pattern — no new infra, just more tests, same as `close_case`/`reopen_case`:**
 - `advance_case_stage`: atomicity, single-active invariant enforcement, concurrency (two simultaneous advances can't skip a stage — same lock pattern proof as `close_case`), each gate (`stage_not_ready`, `reopened_requirement_pending`, `unassigned_requirement_pending`) individually, last-stage-completes-without-closing-case, correct audit payload, correct returned `participant_id` set (fix #5's tightened criterion).
 - `reopen_requirement`: supersede correctness (original row untouched history, new row clean), `deriveState` on the new row, rejecting reopen on a non-completed stage / non-satisfied requirement, `reopened_from_requirement_id` propagation.
-- `assign_requirement_stage`: happy path, rejects locked/completed target, rejects already-assigned requirement, tenant isolation.
+- `assign_requirement_stage`: happy path, rejects locked/completed target, rejects already-assigned requirement, rejects a reopened requirement (`reopened_requirement_cannot_move`), tenant isolation.
 - `actionable_requirement_ids` / the unified reminder selector: cron and manual paths return identical sets for the same fixture data (the actual regression test for the drift bug), excludes archived/deleted/superseded, excludes locked-stage requirements, includes reopened-pending, includes legacy stageless requirements.
 - `createCaseWithParticipants` fix: participant-scoped requirements across multiple stages land on correct `stage_id`; unresolved `stage_position` fails Case creation (no silent null).
 - Security: a Client session cannot call `advance_case_stage`/`reopen_requirement`/`assign_requirement_stage` (RLS/authorization check rejects); Participant A cannot read Participant B's `actionable_requirement_ids` results even indirectly.
