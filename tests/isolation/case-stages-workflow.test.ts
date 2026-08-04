@@ -791,7 +791,7 @@ describe('app.actionable_requirement_ids', () => {
   });
 
   it('excludes an archived-but-not-deleted requirement (the drift bug this task fixes)', async () => {
-    const w = await buildStagedCase({ name: 'Notaría Actionable Archived', stageCount: 0 });
+    const w = await buildStagedCase({ name: 'Notaría Actionable Archived', stageCount: 1 });
     await adminClient().from('requirements').update({ status: 'archived' }).eq('id', w.requirementIds[0]!);
 
     const ids = await withDb((db) =>

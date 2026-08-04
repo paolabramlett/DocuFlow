@@ -24,24 +24,29 @@ as $$
     and r.superseded_at is null
     and r.status = 'outstanding'
     and (
-      -- Case has no case_stages rows at all: legacy flat behavior, everything outstanding is
-      -- actionable.
-      not exists (select 1 from public.case_stages s where s.case_id = r.case_id)
       -- The requirement's own stage is the currently active one.
-      or cs.status = 'active'
+      cs.status = 'active'
       -- The requirement's stage is completed, but this specific requirement was reopened and is
       -- still pending correction.
       or (cs.status = 'completed' and r.reopened_from_requirement_id is not null)
-      -- Legacy "Sin etapa" requirement in a Case that does have stages: shown to the client as
-      -- actionable for compatibility (design spec §2, "Legacy stage_id = null requirements").
+      -- No stage at all: either this Case has no case_stages rows whatsoever (legacy, stageless
+      -- Case), or this is a legacy "Sin etapa" requirement in a Case that otherwise does have
+      -- stages. Both cases are actionable for compatibility (design spec §2, "Legacy stage_id =
+      -- null requirements"). A requirement's stage_id always belongs to its own case (composite FK
+      -- on (stage_id, case_id, organization_id)), so "the Case has zero case_stages rows" already
+      -- implies "this requirement's stage_id is null" — no separate not-exists branch is needed.
       or r.stage_id is null
     )
 $$;
 
 comment on function app.actionable_requirement_ids(uuid) is
-  'The one shared definition of "actionable now" for a Participant''s Requirements. Used by both
-   app.eligible_reminders() and sendManualReminder (application layer) — never reimplemented as a
-   second predicate anywhere else.';
+  'The one shared definition of "actionable now" for a Participant''s Requirements, used by both
+   app.eligible_reminders() and sendManualReminder (application layer) for deciding WHO gets a
+   reminder. NOTE: src/features/reminders/send.ts independently recomputes an outstanding-count for
+   the reminder EMAIL BODY TEXT using its own flat, stage-unaware query — that is a separate,
+   currently-untracked piece of drift this task does not fix (out of scope: it touches the email
+   template, not the selection logic), left for a future follow-up once stages are visible in
+   production reminders.';
 
 revoke all on function app.actionable_requirement_ids(uuid) from public;
 grant execute on function app.actionable_requirement_ids(uuid) to authenticated, service_role;
