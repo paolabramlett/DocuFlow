@@ -45,10 +45,11 @@ describe('Portal Checklist — Correcciones pendientes section', () => {
 
   it('a reopened requirement is excluded from the ordinary "Qué necesitas hacer" pending list', () => {
     const state = baseState({
-      pendingCount: 1,
+      pendingCount: 2,
       isComplete: false,
       requirements: [
         { id: 'r2', label: 'CURP vendedor', state: 'pending', reopenedFromRequirementId: null },
+        { id: 'r1', label: 'INE comprador', state: 'pending', stageStatus: 'completed', originalStageName: 'Kick-Off', reopenedFromRequirementId: 'orig-1' },
       ],
       correctionsPending: [
         { id: 'r1', label: 'INE comprador', state: 'pending', stageStatus: 'completed', originalStageName: 'Kick-Off', reopenedFromRequirementId: 'orig-1' },

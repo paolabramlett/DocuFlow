@@ -1127,6 +1127,14 @@ export type Database = {
         Args: { p_participant_id: string }
         Returns: string[]
       }
+      list_participant_stage_context: {
+        Args: { p_participant_id: string }
+        Returns: {
+          requirement_id: string
+          stage_name: string
+          stage_status: string
+        }[]
+      }
       org_members_with_email: {
         Args: { target_organization_id: string }
         Returns: {

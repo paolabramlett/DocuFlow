@@ -351,14 +351,17 @@ export function Checklist({ token, state, onChanged }: { token: string; state: P
         {state.correctionsPending.length > 0 && (
           <section className="mb-6 rounded-card border border-warning/30 bg-warning-bg/40 p-4">
             <h3 className="text-sm font-semibold text-text-primary">Correcciones pendientes</h3>
-            <ul className="mt-2 space-y-1.5">
+            <div className="mt-2 space-y-3">
               {state.correctionsPending.map((r) => (
-                <li key={r.id} className="text-sm text-text-primary">
-                  {r.label}
-                  {r.originalStageName && <span className="text-text-secondary"> ({r.originalStageName})</span>}
-                </li>
+                <div key={r.id}>
+                  {r.originalStageName && (
+                    <p className="mb-1 text-xs text-text-secondary">({r.originalStageName})</p>
+                  )}
+                  {r.reopenReason && <p className="mb-1 text-xs text-text-secondary">{r.reopenReason}</p>}
+                  <RequirementCard token={token} r={r} onChanged={onChanged} />
+                </div>
               ))}
-            </ul>
+            </div>
           </section>
         )}
         {state.workflowComplete && state.caseState === "open" && (
@@ -374,7 +377,10 @@ export function Checklist({ token, state, onChanged }: { token: string; state: P
             <h2 className="mb-3 mt-8 text-sm font-semibold text-text-primary">Tus documentos</h2>
             <div className="space-y-3">
               {state.requirements
-                .filter((r) => r.reopenedFromRequirementId === null)
+                // Exclude a reopened item only while it's still pending/rejected — it's shown in
+                // "Correcciones pendientes" above instead. Once it's review/approved (corrected and
+                // resolved before the Case closed), it belongs here like any other item.
+                .filter((r) => !(r.reopenedFromRequirementId !== null && (r.state === "pending" || r.state === "rejected")))
                 .map((r) => (
                   <RequirementCard key={r.id} token={token} r={r} onChanged={onChanged} readOnly />
                 ))}
@@ -382,7 +388,10 @@ export function Checklist({ token, state, onChanged }: { token: string; state: P
           </>
         ) : documentationComplete ? (
           <>
-            <CompletionBanner />
+            {/* Suppressed when workflowComplete is also true (it always is, once documentationComplete
+                is true and the Case still has a workflow) — the "Workflow completo" banner rendered
+                above already covers this message; showing both would be a near-duplicate. */}
+            {!state.workflowComplete && <CompletionBanner />}
             <h2 className="mb-3 mt-8 text-sm font-semibold text-text-primary">Tus documentos</h2>
             <div className="space-y-3">
               {resolved.map((r) => (
@@ -392,9 +401,12 @@ export function Checklist({ token, state, onChanged }: { token: string; state: P
           </>
         ) : (
           <>
-            {/* The counter is visible but quiet — never the hero (docs/CLIENT_PORTAL.md, rule 7). */}
+            {/* The counter is visible but quiet — never the hero (docs/CLIENT_PORTAL.md, rule 7).
+                Describes only the "Qué necesitas hacer" list rendered right below it — Correcciones
+                pendientes already has its own heading and its own item count is visually obvious
+                from its own list, so it doesn't need a duplicate counter here. */}
             <p className="mt-1 text-sm text-text-secondary">
-              Te falta{state.pendingCount === 1 ? "n" : ""} {state.pendingCount} de {state.requirements.length}
+              Te falta{pending.length === 1 ? "n" : ""} {pending.length} de {state.requirements.length}
             </p>
 
             <h2 className="mb-3 mt-6 text-sm font-semibold text-text-primary">Qué necesitas hacer</h2>

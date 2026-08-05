@@ -30,13 +30,17 @@ export interface PortalRequirement {
   readonly approvedAt?: string;
   /** Present only for a Requirement belonging to a stage; used to group into "Correcciones
    *  pendientes" vs. the active stage's own list. A 'locked' stage's Requirements never reach
-   *  this far — getPortalCase filters them out entirely, so the Portal never learns a future
-   *  stage exists. */
+   *  this far — getPortalCase filters them out via `list_participant_stage_context` (a security
+   *  definer RPC), since case_stages' own RLS is staff-only and an embedded join from the
+   *  Portal's Participant session would otherwise silently resolve to null (never an error). */
   readonly stageStatus?: 'locked' | 'active' | 'completed';
   /** The original stage's name, shown next to a reopened item so the client has the same context
    *  Staff sees ("(Kick-Off)"). Present only when reopenedFromRequirementId is set. */
   readonly originalStageName?: string;
   readonly reopenedFromRequirementId: string | null;
+  /** Staff's own note on why this item was reopened for correction (reopen_requirement's
+   *  `reopen_reason`). Present only alongside a set reopenedFromRequirementId. */
+  readonly reopenReason?: string;
 }
 
 export interface PortalCase {
@@ -65,8 +69,13 @@ interface RawRequirement {
   status: string;
   stage_id: string | null;
   reopened_from_requirement_id: string | null;
-  stage: { name: string; status: string } | null;
+  reopen_reason: string | null;
   documents: RawDocument[];
+}
+
+interface StageContext {
+  stageStatus: 'locked' | 'active' | 'completed';
+  stageName: string;
 }
 
 interface DerivedState {
@@ -122,7 +131,7 @@ export async function getPortalCase(client: DbClient, participantId: string): Pr
     .select(
       `case:cases(title, state, client_closing_note, organization:organizations(name)),
        requirements(id, label, position, status, deleted_at, superseded_at,
-         stage_id, reopened_from_requirement_id, stage:case_stages(name, status),
+         stage_id, reopened_from_requirement_id, reopen_reason,
          documents(id, file_name, created_at, reviews(decision, reason, created_at)))`,
     )
     .eq('id', participantId)
@@ -131,12 +140,29 @@ export async function getPortalCase(client: DbClient, participantId: string): Pr
   if (error) throw new Error(`getPortalCase: ${error.message}`);
   if (!data?.case) return null;
 
+  // case_stages' own SELECT policy is staff-only (case_stages_select_by_member); an embedded join
+  // from this (Participant) session would silently resolve to null under RLS, never an error. This
+  // security-definer RPC — explicitly re-gated against app.granted_participant_ids — bridges that
+  // gap the same way app.actionable_requirement_ids does for the reminder selector.
+  const { data: stageContextRows, error: stageContextError } = await client.rpc(
+    'list_participant_stage_context',
+    { p_participant_id: participantId },
+  );
+  if (stageContextError) throw new Error(`getPortalCase: ${stageContextError.message}`);
+
+  const stageContextById = new Map<string, StageContext>(
+    (stageContextRows ?? []).map((row) => [
+      row.requirement_id,
+      { stageStatus: row.stage_status as 'locked' | 'active' | 'completed', stageName: row.stage_name },
+    ]),
+  );
+
   const requirements = (data.requirements ?? [])
     .filter((r) => !r.deleted_at && !r.superseded_at)
     .map((r) => {
       const raw = r as RawRequirement;
       const derived = deriveState(raw);
-      const stageStatus = raw.stage?.status as ('locked' | 'active' | 'completed') | undefined;
+      const stageContext = stageContextById.get(r.id);
       return {
         id: r.id,
         label: r.label,
@@ -145,17 +171,20 @@ export async function getPortalCase(client: DbClient, participantId: string): Pr
         documentId: derived.documentId,
         fileName: derived.fileName,
         approvedAt: derived.approvedAt,
-        stageStatus,
+        stageStatus: stageContext?.stageStatus,
         // Only meaningful next to a reopened item — a reopened row always carries its original
         // (necessarily 'completed') stage's own stage_id, per reopen_requirement's own guard, so
-        // this needs no separate lookup: raw.stage IS that original stage.
-        originalStageName: raw.reopened_from_requirement_id !== null ? raw.stage?.name : undefined,
+        // this needs no separate lookup: the row's own stage context IS that original stage.
+        originalStageName: raw.reopened_from_requirement_id !== null ? stageContext?.stageName : undefined,
         reopenedFromRequirementId: raw.reopened_from_requirement_id,
+        reopenReason: raw.reopen_reason ?? undefined,
       };
     })
     // A 'locked' future stage's Requirements are never shown to the client at all — not even to
-    // count toward pendingCount — so the Portal can't spoil what's coming next. Nothing else needs
-    // to filter this out downstream once it's gone here.
+    // count toward pendingCount — so the Portal can't spoil what's coming next. A requirement with
+    // NO stage context entry (stage_id was null — no stage at all) is NOT locked and stays
+    // included: that's the "Case has no workflow" / legacy "Sin etapa" case, always actionable.
+    // Nothing else needs to filter this out downstream once it's gone here.
     .filter((r) => r.stageStatus !== 'locked')
     .sort((a, b) => STATE_ORDER[a.state] - STATE_ORDER[b.state]);
 
