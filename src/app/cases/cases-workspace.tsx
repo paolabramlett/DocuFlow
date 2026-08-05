@@ -189,7 +189,7 @@ function StageStepper({ c }: { c: CaseView }) {
   const router = useRouter();
 
   if (c.stages.length === 0) {
-    return <p className="mb-4 text-xs font-medium text-text-secondary">Sin workflow por etapas</p>;
+    return null;
   }
 
   const blocker = currentStageAdvanceBlocker(c);
@@ -247,6 +247,7 @@ function StageStepper({ c }: { c: CaseView }) {
 function SinEtapaSection({ c }: { c: CaseView }) {
   const router = useRouter();
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   if (c.stages.length === 0) return null;
   const unassigned = c.participants.flatMap((p) => p.requirements).filter((r) => r.stageId === null);
@@ -256,8 +257,13 @@ function SinEtapaSection({ c }: { c: CaseView }) {
   async function assign(requirementId: string) {
     if (!activeStage) return;
     setBusyId(requirementId);
-    await assignRequirementStageAction(requirementId, activeStage.id);
+    setError(null);
+    const result = await assignRequirementStageAction(requirementId, activeStage.id);
     setBusyId(null);
+    if (!result.ok) {
+      setError(result.message);
+      return;
+    }
     router.refresh();
   }
 
@@ -280,6 +286,7 @@ function SinEtapaSection({ c }: { c: CaseView }) {
           </li>
         ))}
       </ul>
+      {error && <p className="mt-1.5 text-xs text-error">{error}</p>}
     </section>
   );
 }

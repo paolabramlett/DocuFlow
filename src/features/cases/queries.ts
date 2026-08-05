@@ -268,5 +268,10 @@ export function workflowDocumentationComplete(c: CaseView): boolean {
   const allReqs = c.participants.flatMap((p) => p.requirements);
   if (allReqs.some((r) => r.stageId === null && r.state !== "approved")) return false;
   if (allReqs.some((r) => r.reopenedFromRequirementId !== null && r.state !== "approved")) return false;
+  // Defensive: every Stage is already confirmed "completed" above, so any Requirement carrying a
+  // real stageId lives in a completed Stage. Trusting only reopenedFromRequirementId would miss
+  // debt from a Requirement added directly to an already-completed Stage (never reopened, never
+  // unassigned) — this catches it regardless of how it got there.
+  if (allReqs.some((r) => r.stageId !== null && r.state !== "approved")) return false;
   return true;
 }
