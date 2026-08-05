@@ -86,25 +86,101 @@ create index document_upload_sessions_requirement_idx
 
 alter table public.document_upload_sessions enable row level security;
 
--- A Participant may see and create their own sessions (scoped by an active 'upload' grant,
--- mirroring requirements' own grant-scoped policy shape). No update/delete policy for any client
--- role — every state transition happens through the RPCs in later tasks (security invoker, so
--- they rely on this same SELECT policy for their own authorization read, then FOR UPDATE).
+-- A Participant may SEE their own sessions (scoped by an active 'upload' grant, mirroring
+-- requirements' own grant-scoped policy shape). Deliberately NO insert/update/delete policy for
+-- any client role, for any operation: creation goes through create_upload_session (this same
+-- migration, below) and every state transition goes through the RPCs in later tasks — all
+-- security definer/invoker functions that re-validate the caller's own business rules in SQL,
+-- never a bare RLS check on the write itself. A client that could INSERT directly (even scoped to
+-- their own participant_id) could smuggle in values create_upload_session's own validation
+-- rejects — an already-satisfied requirement's id, a declared_size_bytes/content_type outside
+-- this project's real limits, or a storage_path that doesn't match documentObjectPath's shape.
+-- Table access from any client role is read-only; every write is RPC-mediated.
 create policy document_upload_sessions_select_own
   on public.document_upload_sessions for select
   to authenticated
   using (participant_id in (select app.granted_participant_ids('upload')));
 
-create policy document_upload_sessions_insert_own
-  on public.document_upload_sessions for insert
-  to authenticated
-  with check (participant_id in (select app.granted_participant_ids('upload')));
-
 comment on table public.document_upload_sessions is
   'Tracks a Portal document upload attempt through prepare -> direct browser upload -> finalize.
    State machine: pending -> finalizing -> completed, or pending -> cancelled, or
    pending/finalizing -> expired. See design spec section 4 for the full claim/finalize race
-   analysis and section 9 for why terminal rows are retained (not deleted) for 7-30 days.';
+   analysis and section 9 for why terminal rows are retained (not deleted) for 7-30 days. Every
+   write to this table — including creation — is RPC-mediated (create_upload_session,
+   claim_upload_session_for_finalize, finalize_document_upload, cancel_upload_session); no client
+   role has an insert/update/delete RLS policy on the table itself.';
+
+-- Creation is its own RPC, not a raw INSERT the client performs directly — this is the same
+-- reasoning as every state-transition RPC below, applied to the FIRST write too. security definer
+-- (not invoker): with no insert policy at all for any role, an invoker-mode function running as
+-- the caller couldn't insert either — this function must run with the owning role's privilege,
+-- so it re-validates everything itself rather than leaning on RLS for any part of the check.
+create or replace function public.create_upload_session(
+  p_requirement_id uuid,
+  p_original_file_name text,
+  p_declared_content_type text,
+  p_declared_size_bytes bigint,
+  p_storage_path text,
+  p_reserved_document_id uuid,
+  p_signed_url_expires_at timestamptz
+)
+returns uuid
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  v_participant_id uuid;
+  v_org_id uuid;
+  v_case_id uuid;
+  v_requirement_status text;
+  v_session_id uuid;
+begin
+  -- Resolves the caller's OWN participant identity from auth.uid() via the requirement itself —
+  -- exactly how app.granted_participant_ids already works — never trusting a client-supplied
+  -- participant_id (this function takes none). A requirement not owned by one of the caller's
+  -- own granted (upload-permission) participants matches zero rows here, so it's indistinguishable
+  -- from a nonexistent requirement, same reasoning as every other RPC in this feature.
+  select r.organization_id, r.case_id, r.participant_id, r.status
+    into v_org_id, v_case_id, v_participant_id, v_requirement_status
+  from public.requirements r
+  where r.id = p_requirement_id
+    and r.participant_id in (select app.granted_participant_ids('upload'));
+
+  if v_participant_id is null then
+    raise exception using errcode = 'P0001', message = 'requirement_not_found';
+  end if;
+  if v_requirement_status = 'satisfied' then
+    raise exception using errcode = 'P0001', message = 'requirement_already_satisfied';
+  end if;
+  -- Re-states MAX_DOCUMENT_BYTES (25 MiB) / ALLOWED_CONTENT_TYPES (src/features/documents/
+  -- schemas.ts) at the SQL layer — the same "two enforcement points on purpose" precedent this
+  -- schema's own comment already establishes for storage bucket limits vs. app-level checks. If
+  -- those constants ever change, this literal list must be updated in the same commit.
+  if p_declared_size_bytes <= 0 or p_declared_size_bytes > 26214400 then
+    raise exception using errcode = 'P0001', message = 'file_too_large';
+  end if;
+  if p_declared_content_type not in ('application/pdf', 'image/jpeg', 'image/png', 'image/heic', 'image/webp') then
+    raise exception using errcode = 'P0001', message = 'content_type_not_allowed';
+  end if;
+
+  insert into public.document_upload_sessions (
+    organization_id, case_id, requirement_id, participant_id, storage_path,
+    original_file_name, declared_content_type, declared_size_bytes,
+    signed_url_expires_at, reserved_document_id, expires_at
+  ) values (
+    v_org_id, v_case_id, p_requirement_id, v_participant_id, p_storage_path,
+    p_original_file_name, p_declared_content_type, p_declared_size_bytes,
+    p_signed_url_expires_at, p_reserved_document_id, now() + interval '30 minutes'
+  )
+  returning id into v_session_id;
+
+  return v_session_id;
+end;
+$$;
+
+revoke all on function public.create_upload_session(uuid, text, text, bigint, text, uuid, timestamptz) from public;
+grant execute on function public.create_upload_session(uuid, text, text, bigint, text, uuid, timestamptz) to authenticated;
 ```
 
 - [ ] **Step 2: Apply the migration locally**
@@ -124,7 +200,7 @@ Expected: `src/types/database.ts` gains a `document_upload_sessions` table entry
 import { randomUUID } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { adminClient, createOrganizationWithOwner } from '../helpers/clients';
-import { buildOrganizationWorld } from '../helpers/fixtures';
+import { buildOrganizationWorld, grantVerifiedAccess } from '../helpers/fixtures';
 
 function futureIso(minutes: number): string {
   return new Date(Date.now() + minutes * 60_000).toISOString();
@@ -243,19 +319,168 @@ describe('document_upload_sessions: schema', () => {
       .eq('id', session!.id);
     expect(visibleToOther).toHaveLength(0);
   });
+
+  it('no client role can insert a session row directly — there is no insert RLS policy at all', async () => {
+    const world = await buildOrganizationWorld({
+      name: 'Notaría Upload Sessions No Direct Insert',
+      industry: 'notary',
+      clientEmail: `upload-sessions-nodirect-${randomUUID()}@example.test`,
+    });
+    const granted = await grantVerifiedAccess({ world, permission: 'upload' });
+
+    const { error } = await granted.client.from('document_upload_sessions').insert({
+      organization_id: world.organizationId,
+      case_id: world.caseId,
+      requirement_id: world.requirementIds[0],
+      participant_id: world.participantId,
+      storage_path: `${world.organizationId}/cases/${world.caseId}/requirements/${world.requirementIds[0]}/${randomUUID()}`,
+      original_file_name: 'test.pdf',
+      declared_content_type: 'application/pdf',
+      declared_size_bytes: 1000,
+      signed_url_expires_at: futureIso(120),
+      reserved_document_id: randomUUID(),
+      expires_at: futureIso(30),
+    });
+
+    // No insert policy exists for any client role — RLS rejects this outright, distinct from a
+    // business-rule rejection. This is what forces ALL creation through create_upload_session.
+    expect(error).not.toBeNull();
+  });
+});
+
+describe('create_upload_session', () => {
+  it('creates a session for the caller\'s own participant, resolved from the requirement — never a client-supplied participant_id', async () => {
+    const world = await buildOrganizationWorld({
+      name: 'Notaría Create Session Happy',
+      industry: 'notary',
+      clientEmail: `create-session-happy-${randomUUID()}@example.test`,
+    });
+    const granted = await grantVerifiedAccess({ world, permission: 'upload' });
+    const reservedDocumentId = randomUUID();
+    const path = `${world.organizationId}/cases/${world.caseId}/requirements/${world.requirementIds[0]}/${reservedDocumentId}`;
+
+    const { data: sessionId, error } = await granted.client.rpc('create_upload_session', {
+      p_requirement_id: world.requirementIds[0],
+      p_original_file_name: 'ine.pdf',
+      p_declared_content_type: 'application/pdf',
+      p_declared_size_bytes: 1000,
+      p_storage_path: path,
+      p_reserved_document_id: reservedDocumentId,
+      p_signed_url_expires_at: futureIso(120),
+    });
+
+    expect(error).toBeNull();
+    const { data: session } = await adminClient()
+      .from('document_upload_sessions')
+      .select('participant_id, organization_id, case_id, status')
+      .eq('id', sessionId!)
+      .single();
+    expect(session).toMatchObject({
+      participant_id: world.participantId,
+      organization_id: world.organizationId,
+      case_id: world.caseId,
+      status: 'pending',
+    });
+  });
+
+  it('rejects a requirement that does not belong to any of the caller\'s own granted participants', async () => {
+    const world = await buildOrganizationWorld({
+      name: 'Notaría Create Session WrongRequirement',
+      industry: 'notary',
+      clientEmail: `create-session-wrongreq-${randomUUID()}@example.test`,
+    });
+    const granted = await grantVerifiedAccess({ world, permission: 'upload' });
+    const other = await buildOrganizationWorld({
+      name: 'Notaría Create Session WrongRequirement Other',
+      industry: 'notary',
+      clientEmail: `create-session-wrongreq-other-${randomUUID()}@example.test`,
+    });
+
+    const { error } = await granted.client.rpc('create_upload_session', {
+      p_requirement_id: other.requirementIds[0], // belongs to a different Case/participant entirely
+      p_original_file_name: 'ine.pdf',
+      p_declared_content_type: 'application/pdf',
+      p_declared_size_bytes: 1000,
+      p_storage_path: `x/cases/x/requirements/${other.requirementIds[0]}/${randomUUID()}`,
+      p_reserved_document_id: randomUUID(),
+      p_signed_url_expires_at: futureIso(120),
+    });
+    expect(error?.message).toBe('requirement_not_found');
+  });
+
+  it('rejects an already-satisfied requirement', async () => {
+    const world = await buildOrganizationWorld({
+      name: 'Notaría Create Session AlreadySatisfied',
+      industry: 'notary',
+      clientEmail: `create-session-satisfied-${randomUUID()}@example.test`,
+    });
+    const granted = await grantVerifiedAccess({ world, permission: 'upload' });
+    await adminClient().from('requirements').update({ status: 'satisfied' }).eq('id', world.requirementIds[0]!);
+
+    const { error } = await granted.client.rpc('create_upload_session', {
+      p_requirement_id: world.requirementIds[0],
+      p_original_file_name: 'ine.pdf',
+      p_declared_content_type: 'application/pdf',
+      p_declared_size_bytes: 1000,
+      p_storage_path: `x/cases/x/requirements/${world.requirementIds[0]}/${randomUUID()}`,
+      p_reserved_document_id: randomUUID(),
+      p_signed_url_expires_at: futureIso(120),
+    });
+    expect(error?.message).toBe('requirement_already_satisfied');
+  });
+
+  it('rejects a declared size over the real MAX_DOCUMENT_BYTES limit, even if a client tried to bypass the TS-side check', async () => {
+    const world = await buildOrganizationWorld({
+      name: 'Notaría Create Session Oversized',
+      industry: 'notary',
+      clientEmail: `create-session-oversized-${randomUUID()}@example.test`,
+    });
+    const granted = await grantVerifiedAccess({ world, permission: 'upload' });
+
+    const { error } = await granted.client.rpc('create_upload_session', {
+      p_requirement_id: world.requirementIds[0],
+      p_original_file_name: 'huge.pdf',
+      p_declared_content_type: 'application/pdf',
+      p_declared_size_bytes: 26 * 1024 * 1024,
+      p_storage_path: `x/cases/x/requirements/${world.requirementIds[0]}/${randomUUID()}`,
+      p_reserved_document_id: randomUUID(),
+      p_signed_url_expires_at: futureIso(120),
+    });
+    expect(error?.message).toBe('file_too_large');
+  });
+
+  it('rejects a content type outside the real allow-list, even if a client tried to bypass the TS-side check', async () => {
+    const world = await buildOrganizationWorld({
+      name: 'Notaría Create Session BadContentType',
+      industry: 'notary',
+      clientEmail: `create-session-badtype-${randomUUID()}@example.test`,
+    });
+    const granted = await grantVerifiedAccess({ world, permission: 'upload' });
+
+    const { error } = await granted.client.rpc('create_upload_session', {
+      p_requirement_id: world.requirementIds[0],
+      p_original_file_name: 'script.exe',
+      p_declared_content_type: 'application/x-msdownload',
+      p_declared_size_bytes: 1000,
+      p_storage_path: `x/cases/x/requirements/${world.requirementIds[0]}/${randomUUID()}`,
+      p_reserved_document_id: randomUUID(),
+      p_signed_url_expires_at: futureIso(120),
+    });
+    expect(error?.message).toBe('content_type_not_allowed');
+  });
 });
 ```
 
 - [ ] **Step 5: Run the test**
 
 Run: `npx vitest run tests/isolation/document-upload-sessions.test.ts`
-Expected: 4 passed.
+Expected: 11 passed (5 schema/RLS tests + 6 create_upload_session tests).
 
 - [ ] **Step 6: Commit**
 
 ```bash
 git add supabase/migrations/20260805170000_document_upload_sessions.sql src/types/database.ts tests/isolation/document-upload-sessions.test.ts
-git commit -m "Add document_upload_sessions schema: reserved/completed document_id split, state machine constraints"
+git commit -m "Add document_upload_sessions schema + create_upload_session RPC: creation is server-encapsulated, never a direct client insert"
 ```
 
 ---
@@ -352,7 +577,7 @@ Expected: no errors; `claim_upload_session_for_finalize` appears in `src/types/d
 - [ ] **Step 3: Write the failing tests — append to `tests/isolation/document-upload-sessions.test.ts`**
 
 ```typescript
-// Add these imports at the top of the file: import { grantVerifiedAccess } from '../helpers/fixtures';
+// grantVerifiedAccess is already imported at the top of the file (Task 1).
 
 /** Inserts a session row directly (service role), returning its id and reserved_document_id. */
 async function insertSession(
@@ -1381,12 +1606,35 @@ export interface PrepareUploadResult {
   readonly path: string;
 }
 
+const CREATE_UPLOAD_SESSION_MESSAGES: Record<string, string> = {
+  requirement_not_found: 'Ese requisito ya no está disponible para ti.',
+  requirement_already_satisfied: 'Este requisito ya fue aprobado y no se puede reemplazar.',
+  file_too_large: 'El archivo es demasiado grande. El límite es 25 MB.',
+  content_type_not_allowed: 'Ese tipo de archivo no está permitido. Sube un PDF o una imagen.',
+};
+
+function mapCreateUploadSessionError(error: { message: string }): UseCaseError {
+  const message = CREATE_UPLOAD_SESSION_MESSAGES[error.message];
+  if (!message) return new UseCaseError('unexpected', 'No pudimos preparar la subida. Intenta de nuevo.');
+  const reason = error.message === 'requirement_not_found' ? 'not_found' : 'conflict';
+  return new UseCaseError(reason, message);
+}
+
 /**
- * Step 1 of the prepare/upload/finalize flow (design.md, portal-upload-progress). Validates
- * exactly what uploadRequirementDocument already validates today, reserves a
- * document_upload_sessions row FIRST, then mints the signed upload URL — never the reverse order,
+ * Step 1 of the prepare/upload/finalize flow (design.md, portal-upload-progress). Validates the
+ * grant/permission up front for a fast, friendly error, then delegates the actual session
+ * creation to create_upload_session (Task 1) — a security definer RPC, never a raw `.insert()` on
+ * document_upload_sessions (there is no insert RLS policy for any client role; creation is fully
+ * server-encapsulated, exactly like every state transition already is). The RPC re-validates the
+ * requirement/participant/size/content-type itself, so this function's own checks are a UX
+ * fast-path, not the actual security boundary — the same "don't trust a single layer" pattern
+ * this codebase already uses (schemas.ts's own doc comment on ALLOWED_CONTENT_TYPES/
+ * MAX_DOCUMENT_BYTES: "two enforcement points on purpose").
+ *
+ * Reserves the session row FIRST, then mints the signed upload URL — never the reverse order,
  * which would leave a valid upload credential with no internal record if minting failed after the
- * row existed.
+ * row existed. If minting fails, the session is cancelled via cancel_upload_session (Task 4) —
+ * not a raw `.update()`, for the same reason creation itself isn't a raw `.insert()`.
  */
 export async function prepareUpload(client: DbClient, input: PrepareUploadInput): Promise<PrepareUploadResult> {
   let parsed;
@@ -1428,28 +1676,20 @@ export async function prepareUpload(client: DbClient, input: PrepareUploadInput)
     requirementId: parsed.requirementId,
     documentId: reservedDocumentId,
   });
+  const signedUrlExpiresAt = new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString();
 
-  const now = Date.now();
-  const { data: session, error: insertError } = await client
-    .from('document_upload_sessions')
-    .insert({
-      organization_id: requirement.organization_id,
-      case_id: requirement.case_id,
-      requirement_id: parsed.requirementId,
-      participant_id: grant.participantId,
-      storage_path: path,
-      original_file_name: parsed.fileName,
-      declared_content_type: parsed.contentType,
-      declared_size_bytes: parsed.sizeBytes,
-      signed_url_expires_at: new Date(now + 2 * 60 * 60 * 1000).toISOString(),
-      reserved_document_id: reservedDocumentId,
-      expires_at: new Date(now + 30 * 60 * 1000).toISOString(),
-    })
-    .select('id')
-    .single();
+  const { data: sessionId, error: createError } = await client.rpc('create_upload_session', {
+    p_requirement_id: parsed.requirementId,
+    p_original_file_name: parsed.fileName,
+    p_declared_content_type: parsed.contentType,
+    p_declared_size_bytes: parsed.sizeBytes,
+    p_storage_path: path,
+    p_reserved_document_id: reservedDocumentId,
+    p_signed_url_expires_at: signedUrlExpiresAt,
+  });
 
-  if (insertError || !session) {
-    throw new UseCaseError('unexpected', 'No pudimos preparar la subida. Intenta de nuevo.');
+  if (createError || !sessionId) {
+    throw mapCreateUploadSessionError(createError ?? { message: '' });
   }
 
   const { data: signed, error: signError } = await client.storage
@@ -1457,13 +1697,14 @@ export async function prepareUpload(client: DbClient, input: PrepareUploadInput)
     .createSignedUploadUrl(path);
 
   if (signError || !signed) {
-    // The row exists but the credential never did — mark it cancelled rather than leaving a
-    // dangling 'pending' row with no way to ever be uploaded to.
-    await client.from('document_upload_sessions').update({ status: 'cancelled' }).eq('id', session.id);
+    // The row exists but the credential never did — cancel it via the same RPC every other
+    // pending->cancelled transition uses, rather than a raw update, for the same "no direct
+    // writes from client code" reasoning as creation itself.
+    await client.rpc('cancel_upload_session', { p_session_id: sessionId });
     throw new UseCaseError('forbidden', 'No pudimos preparar la subida. Intenta de nuevo.');
   }
 
-  return { sessionId: session.id, signedUrl: signed.signedUrl, token: signed.token, path };
+  return { sessionId, signedUrl: signed.signedUrl, token: signed.token, path };
 }
 ```
 
