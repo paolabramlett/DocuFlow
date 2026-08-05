@@ -76,6 +76,70 @@ describe('case stages', () => {
     expect(byLabel['Signed mandate']).toBe(signatureStage.id);
   });
 
+  // Regression test for a bug caught during the case-stages-workflow feature's own production
+  // preflight (before that feature's migrations were ever pushed): create_case was never updated
+  // when case_stages gained a `status` column defaulting to 'locked' — every cloned stage,
+  // including position 0, stayed locked forever, and advance_case_stage requires an 'active' stage
+  // to exist at all. Without this fix, every Case created from a staged Blueprint would have been
+  // permanently stuck with zero active stages.
+  it('activates the first (minimum-position) cloned stage, leaves the rest locked', async () => {
+    const { organizationId, staff, clientId, blueprintId } = await blueprintWithStages();
+
+    const { data: caseId } = await staff.client.rpc('create_case', {
+      target_organization_id: organizationId,
+      target_client_id: clientId,
+      case_title: 'Staged case — first stage active',
+      from_blueprint_id: blueprintId,
+    });
+
+    const { data: stages } = await staff.client
+      .from('case_stages')
+      .select('position, status, activated_at')
+      .eq('case_id', caseId as string)
+      .order('position');
+
+    expect(stages?.[0]).toMatchObject({ position: 0, status: 'active' });
+    expect(stages?.[0]?.activated_at).not.toBeNull();
+    expect(stages?.[1]).toMatchObject({ position: 1, status: 'locked', activated_at: null });
+  });
+
+  // Regression test for a second bug caught in the same preflight: create_case's case_stages clone
+  // only selected name/position, never blueprint_stages.completion_mode — every cloned stage
+  // silently defaulted to 'requirements' regardless of what the Blueprint author configured.
+  it('clones completion_mode from blueprint_stages onto each cloned case_stages row', async () => {
+    const { organizationId, owner, staff, clientId } = await blueprintWithStages();
+
+    const { data: blueprint } = await owner.client
+      .from('blueprints')
+      .insert({
+        organization_id: organizationId,
+        name: 'Manual-stage intake',
+        requirement_definitions: [],
+      })
+      .select('id')
+      .single();
+    await owner.client.from('blueprint_stages').insert([
+      { organization_id: organizationId, blueprint_id: blueprint!.id, name: 'Kick-Off', position: 0, completion_mode: 'requirements' },
+      { organization_id: organizationId, blueprint_id: blueprint!.id, name: 'Firma', position: 1, completion_mode: 'manual' },
+    ]);
+
+    const { data: caseId } = await staff.client.rpc('create_case', {
+      target_organization_id: organizationId,
+      target_client_id: clientId,
+      case_title: 'Manual-stage case',
+      from_blueprint_id: blueprint!.id,
+    });
+
+    const { data: stages } = await staff.client
+      .from('case_stages')
+      .select('position, completion_mode')
+      .eq('case_id', caseId as string)
+      .order('position');
+
+    expect(stages?.[0]).toMatchObject({ position: 0, completion_mode: 'requirements' });
+    expect(stages?.[1]).toMatchObject({ position: 1, completion_mode: 'manual' });
+  });
+
   it('leaves existing cases untouched when blueprint stages change', async () => {
     const { organizationId, owner, staff, clientId, blueprintId } = await blueprintWithStages();
 
