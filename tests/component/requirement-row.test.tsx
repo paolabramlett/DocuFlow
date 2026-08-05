@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, fireEvent } from '@testing-library/react';
 import type { RequirementView } from '@/features/cases/queries';
 import { RequirementRow } from '@/app/cases/cases-workspace';
+import { reopenRequirementAction } from '@/app/cases/actions';
 
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ refresh: vi.fn(), replace: vi.fn(), push: vi.fn() }),
@@ -13,6 +14,7 @@ vi.mock('next/navigation', () => ({
 vi.mock('@/app/cases/actions', () => ({
   getDocumentDownloadUrlAction: vi.fn(),
   reviewDocumentAction: vi.fn(),
+  reopenRequirementAction: vi.fn().mockResolvedValue({ ok: true, data: null }),
 }));
 
 const reviewableRequirement: RequirementView = {
@@ -21,6 +23,15 @@ const reviewableRequirement: RequirementView = {
   state: 'review',
   documentId: 'doc-1',
   stageId: null,
+  reopenedFromRequirementId: null,
+};
+
+const approvedRequirement: RequirementView = {
+  id: 'req-2',
+  label: 'Comprobante de domicilio',
+  state: 'approved',
+  documentId: 'doc-2',
+  stageId: 'stage-1',
   reopenedFromRequirementId: null,
 };
 
@@ -40,5 +51,32 @@ describe('RequirementRow — caseOpen gate (NOTE(#65): first coverage for this n
     expect(screen.queryByRole('button', { name: 'Rechazar' })).not.toBeInTheDocument();
     // The state label still renders — this only hides the action controls, not the row itself.
     expect(screen.getByText('En revisión')).toBeInTheDocument();
+  });
+});
+
+describe('RequirementRow — Reabrir affordance (closes the missing-UI-entry-point gap)', () => {
+  it('shows Reabrir for an approved requirement whose stage is completed, and confirming calls reopenRequirementAction with the id and reason', async () => {
+    render(<RequirementRow r={approvedRequirement} caseOpen={true} stageCompleted={true} />);
+
+    const reabrirButton = screen.getByRole('button', { name: 'Reabrir' });
+    expect(reabrirButton).toBeInTheDocument();
+
+    fireEvent.click(reabrirButton);
+
+    const textarea = await screen.findByPlaceholderText('ej. El documento subido no coincide con el titular.');
+    fireEvent.change(textarea, { target: { value: 'El documento no coincide con el titular.' } });
+
+    const confirmButton = screen.getByRole('button', { name: 'Confirmar corrección' });
+    fireEvent.click(confirmButton);
+
+    await Promise.resolve();
+
+    expect(reopenRequirementAction).toHaveBeenCalledWith('req-2', 'El documento no coincide con el titular.');
+  });
+
+  it('does not show Reabrir for an approved requirement whose stage is not yet completed', () => {
+    render(<RequirementRow r={approvedRequirement} caseOpen={true} stageCompleted={false} />);
+
+    expect(screen.queryByRole('button', { name: 'Reabrir' })).not.toBeInTheDocument();
   });
 });

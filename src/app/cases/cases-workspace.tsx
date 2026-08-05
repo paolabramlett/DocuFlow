@@ -10,7 +10,7 @@ import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { AppShell, type ShellAccount } from "@/components/app-shell";
 import { IconCheck, IconClock, IconDot, IconEye, IconPlus, IconSearch, IconX, type IconProps } from "@/components/icons";
-import type { CaseView, OperativeCounts, ParticipantView, ReqDisplayState, RequirementView } from "@/features/cases/queries";
+import type { CaseView, OperativeCounts, ParticipantView, ReqDisplayState, RequirementView, StageView } from "@/features/cases/queries";
 import { currentStageAdvanceBlocker } from "@/features/cases/queries";
 import {
   advanceCaseStageAction,
@@ -18,6 +18,7 @@ import {
   closeCaseAction,
   getDocumentDownloadUrlAction,
   reopenCaseAction,
+  reopenRequirementAction,
   reviewDocumentAction,
   sendManualReminderAction,
 } from "./actions";
@@ -141,9 +142,10 @@ function CaseRow({ c, selected, onSelect }: { c: CaseView; selected: boolean; on
   );
 }
 
-function ParticipantColumn({ p, caseOpen }: { p: ParticipantView; caseOpen: boolean }) {
+function ParticipantColumn({ p, caseOpen, stages }: { p: ParticipantView; caseOpen: boolean; stages: StageView[] }) {
   const c = counts(p.requirements);
   const pc = pct(p.requirements);
+  const completedStageIds = new Set(stages.filter((s) => s.status === "completed").map((s) => s.id));
   return (
     <div className="flex flex-col overflow-hidden rounded-card border border-border bg-surface">
       <div className="border-b border-border px-5 py-4">
@@ -177,7 +179,14 @@ function ParticipantColumn({ p, caseOpen }: { p: ParticipantView; caseOpen: bool
         </div>
       </div>
       <ul className="flex-1">
-        {p.requirements.map((r) => <RequirementRow key={r.id} r={r} caseOpen={caseOpen} />)}
+        {p.requirements.map((r) => (
+          <RequirementRow
+            key={r.id}
+            r={r}
+            caseOpen={caseOpen}
+            stageCompleted={r.stageId !== null && completedStageIds.has(r.stageId)}
+          />
+        ))}
       </ul>
     </div>
   );
@@ -296,11 +305,21 @@ function SinEtapaSection({ c }: { c: CaseView }) {
 // server-side `cases.state === 'open'` check (src/features/documents/documents.ts), which
 // rejects the same operation regardless of how it's invoked. Add automated coverage once
 // component-testing infrastructure exists (task #65).
-export function RequirementRow({ r, caseOpen }: { r: RequirementView; caseOpen: boolean }) {
+export function RequirementRow({
+  r,
+  caseOpen,
+  stageCompleted = false,
+}: {
+  r: RequirementView;
+  caseOpen: boolean;
+  stageCompleted?: boolean;
+}) {
   const m = REQ[r.state];
-  const [busy, setBusy] = useState<"approve" | "reject" | "view" | null>(null);
+  const [busy, setBusy] = useState<"approve" | "reject" | "view" | "reopen" | null>(null);
   const [rejecting, setRejecting] = useState(false);
   const [reason, setReason] = useState("");
+  const [reopening, setReopening] = useState(false);
+  const [reopenReason, setReopenReason] = useState("");
   const [error, setError] = useState<string | null>(null);
   const router = useRouter();
 
@@ -348,6 +367,18 @@ export function RequirementRow({ r, caseOpen }: { r: RequirementView; caseOpen: 
     router.refresh();
   }
 
+  async function confirmReopen() {
+    if (!reopenReason.trim()) return;
+    setBusy("reopen");
+    setError(null);
+    const result = await reopenRequirementAction(r.id, reopenReason);
+    setBusy(null);
+    if (!result.ok) { setError(result.message); return; }
+    setReopening(false);
+    setReopenReason("");
+    router.refresh();
+  }
+
   return (
     <li id={`req-${r.id}`} className="border-b border-border px-5 py-3 last:border-b-0">
       <div className="flex items-center gap-3">
@@ -386,6 +417,15 @@ export function RequirementRow({ r, caseOpen }: { r: RequirementView; caseOpen: 
             >
               {busy === "view" ? "Abriendo…" : "Ver documento"}
             </button>
+            {stageCompleted && caseOpen && (
+              <button
+                onClick={() => setReopening((v) => !v)}
+                disabled={busy !== null}
+                className="rounded-input border border-warning/30 bg-warning-bg px-2.5 py-1 text-xs font-semibold text-warning transition-colors hover:bg-warning/10 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                Reabrir
+              </button>
+            )}
             <span className={`text-xs font-medium ${m.fg}`}>{m.label}</span>
           </div>
         ) : (
@@ -414,6 +454,33 @@ export function RequirementRow({ r, caseOpen }: { r: RequirementView; caseOpen: 
               {busy === "reject" ? "Enviando…" : "Confirmar rechazo"}
             </button>
             <button onClick={() => { setRejecting(false); setReason(""); }} className="text-xs font-medium text-text-secondary hover:text-text-primary">
+              Cancelar
+            </button>
+          </div>
+        </div>
+      )}
+
+      {reopening && (
+        <div className="mt-2.5 rounded-input border border-warning/30 bg-warning-bg/40 p-3">
+          <label className="block">
+            <span className="mb-1 block text-xs font-medium text-text-primary">Motivo de la corrección (el cliente lo verá)</span>
+            <textarea
+              value={reopenReason}
+              onChange={(e) => setReopenReason(e.target.value)}
+              rows={2}
+              placeholder="ej. El documento subido no coincide con el titular."
+              className="w-full rounded-input border border-border bg-surface px-2.5 py-1.5 text-sm text-text-primary outline-none focus:border-warning focus:ring-2 focus:ring-warning/15"
+            />
+          </label>
+          <div className="mt-2 flex items-center gap-2">
+            <button
+              onClick={confirmReopen}
+              disabled={busy !== null || !reopenReason.trim()}
+              className="rounded-input bg-warning px-3 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-warning/90 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {busy === "reopen" ? "Enviando…" : "Confirmar corrección"}
+            </button>
+            <button onClick={() => { setReopening(false); setReopenReason(""); }} className="text-xs font-medium text-text-secondary hover:text-text-primary">
               Cancelar
             </button>
           </div>
@@ -543,7 +610,7 @@ function CaseDetail({ c }: { c: CaseView }) {
         <section className="mt-8">
           <h3 className="mb-3 text-sm font-semibold text-text-primary">Participantes</h3>
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-            {c.participants.map((pt) => <ParticipantColumn key={pt.id} p={pt} caseOpen={c.state === "open"} />)}
+            {c.participants.map((pt) => <ParticipantColumn key={pt.id} p={pt} caseOpen={c.state === "open"} stages={c.stages} />)}
           </div>
         </section>
       </div>
