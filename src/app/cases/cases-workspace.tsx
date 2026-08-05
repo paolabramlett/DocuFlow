@@ -11,7 +11,7 @@ import { useState } from "react";
 import { AppShell, type ShellAccount } from "@/components/app-shell";
 import { IconCheck, IconClock, IconDot, IconEye, IconPlus, IconSearch, IconX, type IconProps } from "@/components/icons";
 import type { CaseView, OperativeCounts, ParticipantView, ReqDisplayState, RequirementView, StageView } from "@/features/cases/queries";
-import { currentStageAdvanceBlocker } from "@/features/cases/queries";
+import { currentStageAdvanceBlocker } from "@/features/cases/workflow-rules";
 import {
   advanceCaseStageAction,
   assignRequirementStageAction,

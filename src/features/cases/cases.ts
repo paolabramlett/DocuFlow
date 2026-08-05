@@ -298,15 +298,51 @@ function mapAdvanceStageError(error: PostgrestError): UseCaseError {
   return new UseCaseError(reason, message);
 }
 
+async function notifyParticipantsOfStageAdvance(
+  client: DbClient,
+  caseId: string,
+  notifiedParticipantIds: string[],
+  sendEmail: (input: SendTransactionalEmailInput) => Promise<void> = sendTransactionalEmail,
+): Promise<void> {
+  try {
+    const { title, organizationName } = await readCaseAndOrgName(client, caseId);
+    const safeTitle = escapeHtml(title);
+    for (const participantId of notifiedParticipantIds) {
+      // Best-effort, one Participant at a time — matches notifyParticipantsOfReopening: a failure
+      // for one Participant must never stop the loop from reaching the rest, and the Case's Stage
+      // has already advanced (the RPC committed) regardless of whether this email goes out. Staff
+      // still has "Recordar" as a manual fallback if a Participant reports never hearing from us.
+      try {
+        const reissued = await reissueParticipantInvitation(client, participantId);
+        await sendEmail({
+          to: reissued.invitedEmail,
+          subject: `Nuevos documentos requeridos — ${organizationName}`,
+          html: `<h2>Tu expediente avanzó de etapa</h2>\n<p><strong>${safeTitle}</strong> necesita información nueva de tu parte. Usa el siguiente enlace:</p>\n<p><a href="${APP_ORIGIN}/portal/${reissued.token}">Ir a mi expediente</a></p>`,
+          idempotencyKey: `case-stage-advance/${caseId}/${participantId}/${Date.now()}`,
+        });
+      } catch (cause) {
+        console.error('Failed to notify a participant of a Case Stage advancing', { caseId, participantId, cause });
+      }
+    }
+  } catch (cause) {
+    console.error('Failed to notify participants of a Case Stage advancing', { caseId, cause });
+  }
+}
+
 /**
  * Advances a Case to its next Stage. All validation and the state change happen atomically inside
- * the advance_case_stage RPC (Task 3) — this function only calls it and returns the ids of
- * Participants who should be notified of the transition.
+ * the advance_case_stage RPC (Task 3) — this function calls it, sends a best-effort notification
+ * email to every Participant the RPC identifies as having a newly actionable requirement in the
+ * activated Stage (design spec §6, fix #5), and returns those same ids to the caller.
  */
 export async function advanceCaseStage(client: DbClient, caseId: string): Promise<string[]> {
   const { data, error } = await client.rpc('advance_case_stage', { p_case_id: caseId });
   if (error) throw mapAdvanceStageError(error);
-  return (data ?? []).map((r) => r.participant_id);
+  const notifiedParticipantIds = (data ?? []).map((r) => r.participant_id);
+  if (notifiedParticipantIds.length > 0) {
+    await notifyParticipantsOfStageAdvance(client, caseId, notifiedParticipantIds);
+  }
+  return notifiedParticipantIds;
 }
 
 const REOPEN_REQUIREMENT_MESSAGES: Record<string, string> = {
