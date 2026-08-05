@@ -1198,11 +1198,13 @@ export type Database = {
           p_declared_size_bytes: number
           p_original_file_name: string
           p_requirement_id: string
-          p_reserved_document_id: string
           p_signed_url_expires_at: string
-          p_storage_path: string
         }
-        Returns: string
+        Returns: {
+          reserved_document_id: string
+          session_id: string
+          storage_path: string
+        }[]
       }
       emit_participant_invitation: {
         Args: { p_participant_id: string }

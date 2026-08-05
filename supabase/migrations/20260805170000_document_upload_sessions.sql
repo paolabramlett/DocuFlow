@@ -35,8 +35,16 @@ create table public.document_upload_sessions (
 
   constraint document_upload_sessions_completed_matches_reserved
     check (completed_document_id is null or completed_document_id = reserved_document_id),
+  -- Split into two one-directional checks (not a single biconditional) on purpose: a biconditional
+  -- would force claimed_at back to null the instant status leaves 'finalizing', discarding the
+  -- forensic value (how long finalize took) the column exists for. The first check still
+  -- guarantees a 'finalizing' row always has a non-null claimed_at (a real invariant). The second
+  -- guarantees claimed_at is never set on a row that has never been 'finalizing', while allowing
+  -- it to persist once the row leaves 'finalizing' for any terminal-ish state.
   constraint document_upload_sessions_claimed_only_when_finalizing
-    check ((status = 'finalizing') = (claimed_at is not null)),
+    check (status <> 'finalizing' or claimed_at is not null),
+  constraint document_upload_sessions_claimed_only_after_finalizing
+    check (claimed_at is null or status in ('finalizing', 'completed', 'cancelled', 'expired')),
   constraint document_upload_sessions_completed_only_when_completed
     check ((status = 'completed') = (completed_document_id is not null and completed_at is not null))
 );
@@ -92,11 +100,9 @@ create or replace function public.create_upload_session(
   p_original_file_name text,
   p_declared_content_type text,
   p_declared_size_bytes bigint,
-  p_storage_path text,
-  p_reserved_document_id uuid,
   p_signed_url_expires_at timestamptz
 )
-returns uuid
+returns table (session_id uuid, reserved_document_id uuid, storage_path text)
 language plpgsql
 security definer
 set search_path = ''
@@ -107,6 +113,8 @@ declare
   v_case_id uuid;
   v_requirement_status text;
   v_session_id uuid;
+  v_reserved_document_id uuid;
+  v_storage_path text;
 begin
   -- Resolves the caller's OWN participant identity from auth.uid() via the requirement itself —
   -- exactly how app.granted_participant_ids already works — never trusting a client-supplied
@@ -136,20 +144,29 @@ begin
     raise exception using errcode = 'P0001', message = 'content_type_not_allowed';
   end if;
 
+  -- Both values below are server-generated, never client-supplied: a caller-provided
+  -- storage_path could point at any org/case/requirement's object, and a caller-provided
+  -- reserved_document_id could name an existing documents.id from another organization
+  -- entirely — which would later satisfy document_upload_sessions_completed_matches_reserved
+  -- at finalize time, linking an attacker's session to a document row they never created.
+  v_reserved_document_id := gen_random_uuid();
+  v_storage_path := v_org_id::text || '/cases/' || v_case_id::text || '/requirements/'
+                 || p_requirement_id::text || '/' || v_reserved_document_id::text;
+
   insert into public.document_upload_sessions (
     organization_id, case_id, requirement_id, participant_id, storage_path,
     original_file_name, declared_content_type, declared_size_bytes,
     signed_url_expires_at, reserved_document_id, expires_at
   ) values (
-    v_org_id, v_case_id, p_requirement_id, v_participant_id, p_storage_path,
+    v_org_id, v_case_id, p_requirement_id, v_participant_id, v_storage_path,
     p_original_file_name, p_declared_content_type, p_declared_size_bytes,
-    p_signed_url_expires_at, p_reserved_document_id, now() + interval '30 minutes'
+    p_signed_url_expires_at, v_reserved_document_id, now() + interval '30 minutes'
   )
   returning id into v_session_id;
 
-  return v_session_id;
+  return query select v_session_id, v_reserved_document_id, v_storage_path;
 end;
 $$;
 
-revoke all on function public.create_upload_session(uuid, text, text, bigint, text, uuid, timestamptz) from public;
-grant execute on function public.create_upload_session(uuid, text, text, bigint, text, uuid, timestamptz) to authenticated;
+revoke all on function public.create_upload_session(uuid, text, text, bigint, timestamptz) from public;
+grant execute on function public.create_upload_session(uuid, text, text, bigint, timestamptz) to authenticated;
