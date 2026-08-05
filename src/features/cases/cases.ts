@@ -303,11 +303,21 @@ async function notifyParticipantsOfStageAdvance(
   caseId: string,
   notifiedParticipantIds: string[],
   sendEmail: (input: SendTransactionalEmailInput) => Promise<void> = sendTransactionalEmail,
-): Promise<void> {
+): Promise<number> {
+  let failureCount = 0;
   try {
     const { title, organizationName } = await readCaseAndOrgName(client, caseId);
     const safeTitle = escapeHtml(title);
+    const activeGrants = await activeGrantParticipants(client, caseId);
+    const activeGrantByParticipantId = new Map(activeGrants.map((g) => [g.participantId, g.invitedEmail]));
+
     for (const participantId of notifiedParticipantIds) {
+      // A revoked/expired/no grant (or no grant at all) is not "forgot to check their email" —
+      // nothing to notify them about, matching sendManualReminder's own reasoning for skipping
+      // Participants without an active grant.
+      const invitedEmail = activeGrantByParticipantId.get(participantId);
+      if (invitedEmail === undefined) continue;
+
       // Best-effort, one Participant at a time — matches notifyParticipantsOfReopening: a failure
       // for one Participant must never stop the loop from reaching the rest, and the Case's Stage
       // has already advanced (the RPC committed) regardless of whether this email goes out. Staff
@@ -315,34 +325,42 @@ async function notifyParticipantsOfStageAdvance(
       try {
         const reissued = await reissueParticipantInvitation(client, participantId);
         await sendEmail({
-          to: reissued.invitedEmail,
+          to: invitedEmail,
           subject: `Nuevos documentos requeridos — ${organizationName}`,
           html: `<h2>Tu expediente avanzó de etapa</h2>\n<p><strong>${safeTitle}</strong> necesita información nueva de tu parte. Usa el siguiente enlace:</p>\n<p><a href="${APP_ORIGIN}/portal/${reissued.token}">Ir a mi expediente</a></p>`,
           idempotencyKey: `case-stage-advance/${caseId}/${participantId}/${Date.now()}`,
         });
       } catch (cause) {
+        failureCount += 1;
         console.error('Failed to notify a participant of a Case Stage advancing', { caseId, participantId, cause });
       }
     }
   } catch (cause) {
     console.error('Failed to notify participants of a Case Stage advancing', { caseId, cause });
+    failureCount = notifiedParticipantIds.length;
   }
+  return failureCount;
 }
 
 /**
  * Advances a Case to its next Stage. All validation and the state change happen atomically inside
  * the advance_case_stage RPC (Task 3) — this function calls it, sends a best-effort notification
  * email to every Participant the RPC identifies as having a newly actionable requirement in the
- * activated Stage (design spec §6, fix #5), and returns those same ids to the caller.
+ * activated Stage AND who still has an active grant (design spec §6, fix #5), returning those same
+ * ids alongside a notificationFailureCount the caller can surface so Staff knows to use "Recordar".
  */
-export async function advanceCaseStage(client: DbClient, caseId: string): Promise<string[]> {
+export async function advanceCaseStage(
+  client: DbClient,
+  caseId: string,
+): Promise<{ notifiedParticipantIds: string[]; notificationFailureCount: number }> {
   const { data, error } = await client.rpc('advance_case_stage', { p_case_id: caseId });
   if (error) throw mapAdvanceStageError(error);
   const notifiedParticipantIds = (data ?? []).map((r) => r.participant_id);
+  let notificationFailureCount = 0;
   if (notifiedParticipantIds.length > 0) {
-    await notifyParticipantsOfStageAdvance(client, caseId, notifiedParticipantIds);
+    notificationFailureCount = await notifyParticipantsOfStageAdvance(client, caseId, notifiedParticipantIds);
   }
-  return notifiedParticipantIds;
+  return { notifiedParticipantIds, notificationFailureCount };
 }
 
 const REOPEN_REQUIREMENT_MESSAGES: Record<string, string> = {

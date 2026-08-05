@@ -38,14 +38,42 @@ describe('advanceCaseStage notifies Participants of new work', () => {
     const sendEmail = vi.fn().mockResolvedValue(undefined);
     vi.spyOn(await import('@/lib/email/resend'), 'sendTransactionalEmail').mockImplementation(sendEmail);
 
-    const notifiedParticipantIds = await advanceCaseStage(world.staff.client, world.caseId);
+    const result = await advanceCaseStage(world.staff.client, world.caseId);
 
-    expect(notifiedParticipantIds).toEqual([world.participantId]);
+    expect(result.notifiedParticipantIds).toEqual([world.participantId]);
+    expect(result.notificationFailureCount).toBe(0);
     expect(sendEmail).toHaveBeenCalledTimes(1);
     const call = sendEmail.mock.calls[0]?.[0];
     expect(call?.to).toBe(world.clientEmail);
     expect(call?.subject).toContain('Nuevos documentos requeridos');
     expect(call?.html).toContain('avanzó de etapa');
+  });
+
+  it('skips (without erroring or counting as a failure) a notified Participant with no active grant', async () => {
+    const world = await buildStagedOrganizationWorld({
+      name: 'Notaría UseCase Advance No Grant',
+      industry: 'notary',
+      clientEmail: `usecase-advance-nogrant-${randomUUID()}@example.test`,
+      stageCount: 2,
+    });
+    // Deliberately no grantVerifiedAccess call — this Participant was never invited, so it has no
+    // active grant at all, even though the RPC still names it as newly actionable.
+    const stageZeroRequirementIds = [world.requirementIds[0], world.requirementIds[2]].filter(
+      (id): id is string => id !== undefined,
+    );
+    await world.staff.client
+      .from('requirements')
+      .update({ status: 'satisfied' })
+      .in('id', stageZeroRequirementIds);
+
+    const sendEmail = vi.fn().mockResolvedValue(undefined);
+    vi.spyOn(await import('@/lib/email/resend'), 'sendTransactionalEmail').mockImplementation(sendEmail);
+
+    const result = await advanceCaseStage(world.staff.client, world.caseId);
+
+    expect(result.notifiedParticipantIds).toEqual([world.participantId]);
+    expect(result.notificationFailureCount).toBe(0);
+    expect(sendEmail).not.toHaveBeenCalled();
   });
 
   it('sends no email when the RPC returns no newly actionable Participant (e.g. last stage)', async () => {
@@ -62,9 +90,10 @@ describe('advanceCaseStage notifies Participants of new work', () => {
     const sendEmail = vi.fn().mockResolvedValue(undefined);
     vi.spyOn(await import('@/lib/email/resend'), 'sendTransactionalEmail').mockImplementation(sendEmail);
 
-    const notifiedParticipantIds = await advanceCaseStage(world.staff.client, world.caseId);
+    const result = await advanceCaseStage(world.staff.client, world.caseId);
 
-    expect(notifiedParticipantIds).toEqual([]);
+    expect(result.notifiedParticipantIds).toEqual([]);
+    expect(result.notificationFailureCount).toBe(0);
     expect(sendEmail).not.toHaveBeenCalled();
   });
 
@@ -85,6 +114,9 @@ describe('advanceCaseStage notifies Participants of new work', () => {
       .in('id', stageZeroRequirementIds);
     vi.spyOn(await import('@/lib/email/resend'), 'sendTransactionalEmail').mockRejectedValue(new Error('boom'));
 
-    await expect(advanceCaseStage(world.staff.client, world.caseId)).resolves.toEqual([world.participantId]);
+    await expect(advanceCaseStage(world.staff.client, world.caseId)).resolves.toEqual({
+      notifiedParticipantIds: [world.participantId],
+      notificationFailureCount: 1,
+    });
   });
 });

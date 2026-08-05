@@ -160,16 +160,18 @@ export async function reopenCaseAction(
   }
 }
 
-export async function advanceCaseStageAction(caseId: string): Promise<ActionResult<{ notifiedParticipantIds: string[] }>> {
+export async function advanceCaseStageAction(
+  caseId: string,
+): Promise<ActionResult<{ notifiedParticipantIds: string[]; notificationFailureCount: number }>> {
   try {
     const staff = await getStaffContext();
     if (!staff) {
       return { ok: false, reason: "unauthenticated", message: "Tu sesión expiró. Inicia sesión de nuevo." };
     }
     const supabase = await createClient();
-    const notifiedParticipantIds = await advanceCaseStage(supabase, caseId);
+    const { notifiedParticipantIds, notificationFailureCount } = await advanceCaseStage(supabase, caseId);
     revalidatePath("/cases");
-    return ok({ notifiedParticipantIds });
+    return ok({ notifiedParticipantIds, notificationFailureCount });
   } catch (error) {
     return fail(error);
   }

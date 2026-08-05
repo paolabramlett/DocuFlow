@@ -65,13 +65,29 @@ describe('Stage stepper — Continuar button gating', () => {
   });
 
   it('clicking Continuar calls advanceCaseStageAction with the exact case id', async () => {
-    vi.mocked(advanceCaseStageAction).mockResolvedValue({ ok: true, data: { notifiedParticipantIds: [] } });
+    vi.mocked(advanceCaseStageAction).mockResolvedValue({
+      ok: true,
+      data: { notifiedParticipantIds: [], notificationFailureCount: 0 },
+    });
     const user = userEvent.setup();
     render(<CasesWorkspace cases={[stagedCase()]} counts={{ waitingClient: 0, needsReview: 0, readyToContinue: 0, completedToday: 0 }} account={{ name: 'A', sub: 'a@b.com' }} />);
 
     await user.click(screen.getByRole('button', { name: 'Continuar a Milestone 1' }));
 
     expect(advanceCaseStageAction).toHaveBeenCalledWith('case-1');
+  });
+
+  it('shows a per-participant failure message when notificationFailureCount > 0 on an otherwise-successful advance', async () => {
+    vi.mocked(advanceCaseStageAction).mockResolvedValue({
+      ok: true,
+      data: { notifiedParticipantIds: ['p1'], notificationFailureCount: 1 },
+    });
+    const user = userEvent.setup();
+    render(<CasesWorkspace cases={[stagedCase()]} counts={{ waitingClient: 0, needsReview: 0, readyToContinue: 0, completedToday: 0 }} account={{ name: 'A', sub: 'a@b.com' }} />);
+
+    await user.click(screen.getByRole('button', { name: 'Continuar a Milestone 1' }));
+
+    await screen.findByText('La etapa avanzó, pero no pudimos notificar a 1 participante — usa Recordar.');
   });
 
   it('renders the RPC failure message when advanceCaseStageAction rejects even though the client-side blocker was clear', async () => {

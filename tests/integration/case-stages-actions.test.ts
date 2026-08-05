@@ -55,15 +55,37 @@ describe('advanceCaseStageAction', () => {
     if (!result.ok) expect(result.reason).toBe('unauthenticated');
   });
 
-  it('forwards notifiedParticipantIds verbatim and revalidates /cases on success', async () => {
+  it('forwards notifiedParticipantIds and notificationFailureCount verbatim and revalidates /cases on success', async () => {
     vi.spyOn(authContextModule, 'getStaffContext').mockResolvedValue(staffContext);
-    const client = mockRpcClient(async () => ({ data: [{ participant_id: 'participant-1' }], error: null }));
+    const rpcClient = mockRpcClient(async () => ({ data: [{ participant_id: 'participant-1' }], error: null }));
+    // notifyParticipantsOfStageAdvance now resolves activeGrantParticipants via `.from`, which this
+    // fake never populates with any active grant — so `participant-1` (never granted anything in
+    // this fixture-free test) is skipped rather than emailed, keeping notificationFailureCount at 0
+    // without needing to also fake reissueParticipantInvitation/sendTransactionalEmail here.
+    const client = {
+      ...rpcClient,
+      // Thenable so `await ....eq(...)` (activeGrantParticipants' case_access_grants query) works,
+      // while also exposing `.single()` for readCaseAndOrgName's cases query — one fake shape
+      // covering both `.from(...)` call sites this action's real notify path now makes.
+      from: vi.fn().mockReturnValue({
+        select: vi.fn().mockReturnValue({
+          eq: vi.fn().mockReturnValue({
+            then: (resolve: (value: { data: unknown[]; error: null }) => void) =>
+              resolve({ data: [], error: null }),
+            single: vi.fn().mockResolvedValue({ data: { title: 'Test', organization: { name: 'Test Org' } }, error: null }),
+          }),
+        }),
+      }),
+    } as unknown as DbClient;
     vi.spyOn(supabaseServerModule, 'createClient').mockResolvedValue(client);
     vi.spyOn(nextCacheModule, 'revalidatePath').mockImplementation(() => {});
 
     const result = await advanceCaseStageAction(randomUUID());
 
-    expect(result).toEqual({ ok: true, data: { notifiedParticipantIds: ['participant-1'] } });
+    expect(result).toEqual({
+      ok: true,
+      data: { notifiedParticipantIds: ['participant-1'], notificationFailureCount: 0 },
+    });
     expect(nextCacheModule.revalidatePath).toHaveBeenCalledWith('/cases');
   });
 });

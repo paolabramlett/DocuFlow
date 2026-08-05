@@ -214,6 +214,10 @@ function StageStepper({ c }: { c: CaseView }) {
       setError(result.message);
       return;
     }
+    if (result.data.notificationFailureCount > 0) {
+      const n = result.data.notificationFailureCount;
+      setError(`La etapa avanzó, pero no pudimos notificar a ${n} participante${n === 1 ? "" : "s"} — usa Recordar.`);
+    }
     router.refresh();
   }
 
