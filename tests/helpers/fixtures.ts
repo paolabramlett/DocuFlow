@@ -181,6 +181,49 @@ export async function buildOrganizationWorld(options: {
   };
 }
 
+export interface StagedOrganizationWorld extends OrganizationWorld {
+  readonly stageIds: readonly string[];
+}
+
+/** Like buildOrganizationWorld, but also creates N case_stages (first 'active', rest 'locked') and
+ *  distributes the already-cloned requirements across them round-robin, all assigned to the
+ *  primary Participant. Opt-in — most tests should keep using buildOrganizationWorld directly. */
+export async function buildStagedOrganizationWorld(options: {
+  name: string;
+  industry: Industry;
+  clientEmail: string;
+  stageCount: number;
+}): Promise<StagedOrganizationWorld> {
+  const world = await buildOrganizationWorld(options);
+  const admin = adminClient();
+
+  const stageIds: string[] = [];
+  for (let i = 0; i < options.stageCount; i++) {
+    const { data: stage } = await admin
+      .from('case_stages')
+      .insert({
+        organization_id: world.organizationId,
+        case_id: world.caseId,
+        name: `Etapa ${i + 1}`,
+        position: i,
+        status: i === 0 ? 'active' : 'locked',
+        activated_at: i === 0 ? new Date().toISOString() : null,
+      })
+      .select('id')
+      .single();
+    stageIds.push(stage!.id);
+  }
+
+  for (const [index, requirementId] of world.requirementIds.entries()) {
+    await admin
+      .from('requirements')
+      .update({ stage_id: stageIds[index % stageIds.length] })
+      .eq('id', requirementId);
+  }
+
+  return { ...world, stageIds };
+}
+
 export interface TwoOrganizationWorld {
   readonly a: OrganizationWorld;
   readonly b: OrganizationWorld;

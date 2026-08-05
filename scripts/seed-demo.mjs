@@ -123,13 +123,17 @@ async function main() {
   await createBlueprint({
     name: "Compraventa",
     description: "Venta de un inmueble entre un comprador y un vendedor.",
+    stages: [
+      { name: "Kick-Off", position: 0 },
+      { name: "Milestone 1", position: 1 },
+    ],
     requirementDefinitions: [
-      { key: "official-id", type: "document", label: "INE", scope: "participant", participant_role_key: "buyer" },
-      { key: "curp", type: "document", label: "CURP", scope: "participant", participant_role_key: "buyer" },
-      { key: "official-id", type: "document", label: "INE", scope: "participant", participant_role_key: "seller" },
-      { key: "curp", type: "document", label: "CURP", scope: "participant", participant_role_key: "seller" },
-      { key: "property-title", type: "document", label: "Título de propiedad", scope: "participant", participant_role_key: "seller" },
-      { key: "appraisal", type: "document", label: "Avalúo", scope: "case" },
+      { key: "official-id", type: "document", label: "INE", scope: "participant", participant_role_key: "buyer", stage_position: 0 },
+      { key: "curp", type: "document", label: "CURP", scope: "participant", participant_role_key: "buyer", stage_position: 0 },
+      { key: "official-id", type: "document", label: "INE", scope: "participant", participant_role_key: "seller", stage_position: 0 },
+      { key: "curp", type: "document", label: "CURP", scope: "participant", participant_role_key: "seller", stage_position: 0 },
+      { key: "property-title", type: "document", label: "Título de propiedad", scope: "participant", participant_role_key: "seller", stage_position: 1 },
+      { key: "appraisal", type: "document", label: "Avalúo", scope: "case", stage_position: 1 },
     ],
     participantTemplates: [
       { roleKey: "buyer", displayName: "Comprador", position: 0 },
@@ -181,7 +185,12 @@ async function main() {
   const luis = await insert("clients", { organization_id: org.id, full_name: "Luis Guzmán", email: "luis.guzman@example.mx" });
 
   // Helper to create a case with participants and their requirements + document/review states.
-  async function createCase({ title, primaryClientId, participants, state = "open" }) {
+  // `stages`, if given, mirrors this project's own stage-cloning rule (Task 1's schema default /
+  // Task 3's backfill logic): the first cloned case_stages row (lowest position) is 'active', the
+  // rest are 'locked'. This script's createCase does NOT go through the create_case RPC — it
+  // writes directly to cases/requirements — so that clone has to be replicated here rather than
+  // inherited from the RPC.
+  async function createCase({ title, primaryClientId, participants, state = "open", stages = [] }) {
     const c = await insert("cases", {
       organization_id: org.id,
       client_id: primaryClientId,
@@ -189,6 +198,23 @@ async function main() {
       state,
       closed_at: state === "completed" ? new Date().toISOString() : null,
     });
+
+    // Clone case_stages (if any) up front, and build the stage_position -> case_stages.id lookup
+    // requirements resolve against below — mirrors createCaseWithParticipants' own
+    // stagePositionToStageId map (src/application/create-case-with-participants.ts).
+    const stageIdByPosition = new Map();
+    const sortedStages = [...stages].sort((a, b) => a.position - b.position);
+    for (const [index, s] of sortedStages.entries()) {
+      const stage = await insert("case_stages", {
+        organization_id: org.id,
+        case_id: c.id,
+        name: s.name,
+        position: s.position,
+        status: index === 0 ? "active" : "locked",
+        activated_at: index === 0 ? new Date().toISOString() : null,
+      });
+      stageIdByPosition.set(s.position, stage.id);
+    }
 
     const createdParticipants = [];
     for (const p of participants) {
@@ -202,6 +228,18 @@ async function main() {
 
       let position = 0;
       for (const r of p.requirements) {
+        // Never silently drop to stage_id: null for a requirement that named a stage_position —
+        // mirrors §6.1 of the design spec / createCaseWithParticipants' own identical guard.
+        let stageId = null;
+        if (r.stagePosition !== undefined) {
+          stageId = stageIdByPosition.get(r.stagePosition) ?? null;
+          if (stageId === null) {
+            console.error(
+              `createCase(${title}): requirement "${r.label}" names stage_position ${r.stagePosition}, which no cloned case_stages row matches.`,
+            );
+            process.exit(1);
+          }
+        }
         const req = await insert("requirements", {
           organization_id: org.id,
           case_id: c.id,
@@ -210,6 +248,7 @@ async function main() {
           label: r.label,
           position: position++,
           status: r.state === "approved" ? "satisfied" : "outstanding",
+          stage_id: stageId,
         });
 
         // Give review/rejected states a document, and rejected ones a review with a reason.
@@ -261,18 +300,24 @@ async function main() {
   const restrepoCase = await createCase({
     title: "Compraventa · Restrepo",
     primaryClientId: paola.id,
+    // Mirrors the "Compraventa" Blueprint's own stages, so this Case is the one seeded example
+    // that actually populates case_stages for the workflow feature to be manually testable.
+    stages: [
+      { name: "Kick-Off", position: 0 },
+      { name: "Milestone 1", position: 1 },
+    ],
     participants: [
       { clientId: paola.id, role: "Comprador", requirements: [
-        { label: "INE", state: "approved", fileName: "ine-paola.pdf" },
-        { label: "CURP", state: "approved" },
-        { label: "RFC", state: "approved" },
-        { label: "Comprobante de domicilio", state: "review" },
+        { label: "INE", state: "approved", fileName: "ine-paola.pdf", stagePosition: 0 },
+        { label: "CURP", state: "approved", stagePosition: 0 },
+        { label: "RFC", state: "approved", stagePosition: 1 },
+        { label: "Comprobante de domicilio", state: "review", stagePosition: 1 },
       ]},
       { clientId: mateo.id, role: "Vendedor", requirements: [
-        { label: "INE", state: "approved" },
-        { label: "CURP", state: "approved" },
-        { label: "Constancia de situación fiscal", state: "rejected", reason: "El documento está incompleto: falta la segunda página." },
-        { label: "Título de propiedad", state: "missing" },
+        { label: "INE", state: "approved", stagePosition: 0 },
+        { label: "CURP", state: "approved", stagePosition: 0 },
+        { label: "Constancia de situación fiscal", state: "rejected", reason: "El documento está incompleto: falta la segunda página.", stagePosition: 1 },
+        { label: "Título de propiedad", state: "missing", stagePosition: 1 },
       ]},
     ],
   });
