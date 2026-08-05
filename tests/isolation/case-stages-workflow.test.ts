@@ -827,3 +827,50 @@ describe('app.actionable_requirement_ids', () => {
     expect(ids).not.toContain(w.requirementIds[0]);
   });
 });
+
+describe('case_not_open guards', () => {
+  /** Builds a staged Case, satisfies every requirement across every stage, then closes it via
+   *  close_case — matching how tests/isolation/case-closure.test.ts satisfies a Case before
+   *  closing it (close_case's own "documentation_incomplete" gate counts every client-visible
+   *  requirement across the whole Case, regardless of which stage it belongs to or which stage is
+   *  currently active). */
+  async function buildClosedStagedCase(name: string) {
+    const w = await buildStagedCase({ name, stageCount: 2 });
+    for (const id of w.requirementIds) {
+      await adminClient().from('requirements').update({ status: 'satisfied' }).eq('id', id);
+    }
+    const { error: closeError } = await w.staff.client.rpc('close_case', {
+      p_case_id: w.caseId,
+      p_outcome: 'completed',
+    });
+    expect(closeError).toBeNull();
+    return w;
+  }
+
+  it('advance_case_stage rejects on a closed Case', async () => {
+    const w = await buildClosedStagedCase('Notaría CaseNotOpen Advance');
+
+    const { error } = await w.staff.client.rpc('advance_case_stage', { p_case_id: w.caseId });
+    expect(error?.message).toBe('case_not_open');
+  });
+
+  it('reopen_requirement rejects on a closed Case', async () => {
+    const w = await buildClosedStagedCase('Notaría CaseNotOpen Reopen');
+
+    const { error } = await w.staff.client.rpc('reopen_requirement', {
+      p_requirement_id: w.requirementIds[0]!,
+      p_reason: 'Motivo',
+    });
+    expect(error?.message).toBe('case_not_open');
+  });
+
+  it('assign_requirement_stage rejects on a closed Case', async () => {
+    const w = await buildClosedStagedCase('Notaría CaseNotOpen Assign');
+
+    const { error } = await w.staff.client.rpc('assign_requirement_stage', {
+      p_requirement_id: w.requirementIds[0]!,
+      p_stage_id: w.stageIds[0]!,
+    });
+    expect(error?.message).toBe('case_not_open');
+  });
+});

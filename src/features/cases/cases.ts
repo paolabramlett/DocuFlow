@@ -289,6 +289,7 @@ const ADVANCE_STAGE_MESSAGES: Record<string, string> = {
   unassigned_requirement_pending: 'Hay requisitos sin etapa asignada. Resuélvelos primero.',
   reopened_requirement_pending: 'Hay una corrección pendiente de una etapa anterior.',
   stage_not_ready: 'La etapa actual todavía tiene requisitos pendientes.',
+  case_not_open: 'Este expediente ya no está abierto.',
 };
 
 function mapAdvanceStageError(error: PostgrestError): UseCaseError {
@@ -370,6 +371,7 @@ const REOPEN_REQUIREMENT_MESSAGES: Record<string, string> = {
   stage_not_completed: 'Solo se pueden reabrir requisitos de una etapa ya completada.',
   requirement_not_satisfied: 'Este requisito no está aprobado.',
   reopen_reason_required: 'Escribe el motivo de la corrección.',
+  case_not_open: 'Este expediente ya no está abierto.',
 };
 
 function mapReopenRequirementError(error: PostgrestError): UseCaseError {
@@ -401,6 +403,7 @@ const ASSIGN_STAGE_MESSAGES: Record<string, string> = {
   reopened_requirement_cannot_move: 'No se puede reasignar un requisito reabierto.',
   stage_not_found: 'Esa etapa no existe en este expediente.',
   stage_not_active: 'Solo se puede asignar a la etapa activa.',
+  case_not_open: 'Este expediente ya no está abierto.',
 };
 
 function mapAssignStageError(error: PostgrestError): UseCaseError {

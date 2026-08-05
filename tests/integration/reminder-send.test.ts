@@ -4,6 +4,7 @@ import { adminClient } from '../helpers/clients';
 import { queueDueReminders } from '../helpers/db';
 import {
   buildOrganizationWorld,
+  buildStagedOrganizationWorld,
   grantVerifiedAccess,
   type OrganizationWorld,
 } from '../helpers/fixtures';
@@ -122,6 +123,29 @@ describe('reminder send path', () => {
     const beyond = recordingSender();
     await drainReminderQueue(adminClient(), beyond, actionUrl);
     expect(beyond.sent.filter((e) => e.to === world.clientEmail)).toHaveLength(0);
+  });
+
+  it('excludes a requirement in a locked future stage from the reminder email\'s outstandingCount', async () => {
+    // The standard blueprint clones 3 requirements. Round-robin across 2 stages (stage 0 active,
+    // stage 1 locked) puts requirements 0 and 2 in the active stage and requirement 1 in the
+    // locked one — so the stage-aware count (via list_actionable_requirement_ids, the same shared
+    // selector app.eligible_reminders() and the manual "Recordar" path use) must come out to 2, not
+    // the flat, stage-unaware 3 the old query would have reported.
+    const world = await buildStagedOrganizationWorld({
+      name: 'Notaría Staged Reminder',
+      industry: 'notary',
+      clientEmail: `staged-reminder-${randomUUID()}@example.test`,
+      stageCount: 2,
+    });
+    await grantVerifiedAccess({ world, verifiedAt: new Date(Date.now() - 4 * DAY_MS) });
+    await queueDueReminders();
+    const sender = recordingSender();
+
+    await drainReminderQueue(adminClient(), sender, actionUrl);
+
+    const mine = sender.sent.filter((email) => email.to === world.clientEmail);
+    expect(mine).toHaveLength(1);
+    expect(mine[0]?.outstandingCount).toBe(2);
   });
 
   it('recovers: a failed delivery sends on a later successful drain', async () => {

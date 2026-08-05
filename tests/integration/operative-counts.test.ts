@@ -120,3 +120,72 @@ describe('getOperativeCounts: state === "open" guard on waitingClient/needsRevie
     expect(counts.readyToContinue).toBe(1);
   });
 });
+
+describe('getOperativeCounts: stage-aware actionableRequirements (final review fix)', () => {
+  it('a staged Case whose active stage is fully approved, but with an outstanding requirement in a locked future stage, counts readyToContinue and NOT waitingClient', async () => {
+    const world = await buildOrganizationWorld({
+      name: 'Notaría Metric Staged Locked',
+      industry: 'notary',
+      clientEmail: `metric-staged-locked-${randomUUID()}@example.test`,
+    });
+    const stagedCase = caseView({
+      state: 'open',
+      stages: [
+        { id: 'stage-1', name: 'Etapa 1', position: 0, status: 'active', completionMode: 'requirements' },
+        { id: 'stage-2', name: 'Etapa 2', position: 1, status: 'locked', completionMode: 'requirements' },
+      ],
+      participants: [
+        {
+          id: 'p1',
+          name: 'X',
+          role: 'Cliente',
+          requirements: [
+            // Active stage: fully approved.
+            { id: 'r1', label: 'R1', state: 'approved', stageId: 'stage-1', reopenedFromRequirementId: null },
+            // Locked future stage: outstanding, but not actionable yet — must not pull this Case
+            // into waitingClient, and must not stop it from being readyToContinue.
+            { id: 'r2', label: 'R2', state: 'missing', stageId: 'stage-2', reopenedFromRequirementId: null },
+          ],
+        },
+      ],
+    });
+
+    const counts = await getOperativeCounts(world.staff.client, world.organizationId, [stagedCase]);
+
+    expect(counts.readyToContinue).toBe(1);
+    expect(counts.waitingClient).toBe(0);
+  });
+
+  it('a stageless Case (no case_stages rows) buckets exactly as before this fix: every requirement counts, unfiltered', async () => {
+    const world = await buildOrganizationWorld({
+      name: 'Notaría Metric Stageless Unchanged',
+      industry: 'notary',
+      clientEmail: `metric-stageless-unchanged-${randomUUID()}@example.test`,
+    });
+    const stagelessReview = caseView({
+      state: 'open',
+      stages: [],
+      participants: [{ id: 'p1', name: 'X', role: 'Cliente', requirements: [{ id: 'r1', label: 'R', state: 'review', stageId: null, reopenedFromRequirementId: null }] }],
+    });
+    const stagelessWaiting = caseView({
+      state: 'open',
+      stages: [],
+      participants: [{ id: 'p2', name: 'Y', role: 'Cliente', requirements: [{ id: 'r2', label: 'R', state: 'missing', stageId: null, reopenedFromRequirementId: null }] }],
+    });
+    const stagelessReady = caseView({
+      state: 'open',
+      stages: [],
+      participants: [{ id: 'p3', name: 'Z', role: 'Cliente', requirements: [{ id: 'r3', label: 'R', state: 'approved', stageId: null, reopenedFromRequirementId: null }] }],
+    });
+
+    const counts = await getOperativeCounts(world.staff.client, world.organizationId, [
+      stagelessReview,
+      stagelessWaiting,
+      stagelessReady,
+    ]);
+
+    expect(counts.needsReview).toBe(1);
+    expect(counts.waitingClient).toBe(1);
+    expect(counts.readyToContinue).toBe(1);
+  });
+});

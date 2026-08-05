@@ -192,6 +192,30 @@ export interface OperativeCounts {
   completedToday: number;
 }
 
+/**
+ * The requirements that are actually actionable right now from the Staff perspective, for a
+ * single Case — mirrors currentStageAdvanceBlocker's own "what's actionable" logic
+ * (src/features/cases/workflow-rules.ts) so the dashboard summary tiles and the stage-advance
+ * gate never drift into two different answers for the same question.
+ *
+ * For a stageless Case (c.stages.length === 0), this returns every requirement, unfiltered — the
+ * same "zero-stage compatibility" behavior every other read model in this feature preserves.
+ * For a staged Case, only requirements that are: unassigned ("Sin etapa"), a pending
+ * reopened-from-earlier-stage correction, or a member of the currently active stage, count —
+ * everything sitting in a locked future stage is excluded, since Staff cannot act on it yet.
+ */
+function actionableRequirements(c: CaseView): RequirementView[] {
+  const all = c.participants.flatMap((p) => p.requirements);
+  if (c.stages.length === 0) return all;
+  const active = c.stages.find((s) => s.status === "active");
+  return all.filter(
+    (r) =>
+      r.stageId === null ||
+      r.reopenedFromRequirementId !== null ||
+      (active !== undefined && r.stageId === active.id),
+  );
+}
+
 export async function getOperativeCounts(
   client: DbClient,
   organizationId: string,
@@ -202,7 +226,7 @@ export async function getOperativeCounts(
   let readyToContinue = 0;
   for (const c of cases) {
     if (c.state !== "open") continue;
-    const reqs = c.participants.flatMap((p) => p.requirements);
+    const reqs = actionableRequirements(c);
     if (reqs.some((r) => r.state === "review")) needsReview += 1;
     if (reqs.some((r) => r.state === "awaiting" || r.state === "missing" || r.state === "rejected")) waitingClient += 1;
     if (reqs.length > 0 && reqs.every((r) => r.state === "approved")) readyToContinue += 1;

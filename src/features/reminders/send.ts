@@ -140,25 +140,42 @@ async function deliverOne(
     }
 
     // Count only what this Participant still owes — a reminder chases one party's outstanding
-    // work, not the whole Case (design.md D11).
-    const outstandingQuery = admin
-      .from('requirements')
-      .select('id', { count: 'exact', head: true })
-      .eq('case_id', delivery.case_id)
-      .is('deleted_at', null)
-      .is('superseded_at', null)
-      .eq('status', 'outstanding');
-    const { count: outstanding, error: countError } = delivery.participant_id
-      ? await outstandingQuery.eq('participant_id', delivery.participant_id)
-      : await outstandingQuery;
-
-    if (countError) throw new Error(`could not count requirements: ${countError.message}`);
+    // work, not the whole Case (design.md D11). Resolved through the same shared selector the
+    // cron's own eligibility check and the manual "Recordar" path use
+    // (app.actionable_requirement_ids via the list_actionable_requirement_ids RPC), so a
+    // requirement sitting in a locked future stage is excluded here exactly as it is everywhere
+    // else — this stopped being a second, independently-maintained "outstanding" predicate.
+    let outstandingCount: number;
+    if (delivery.participant_id) {
+      const { data: actionableIds, error: actionableError } = await admin.rpc(
+        'list_actionable_requirement_ids',
+        { p_participant_id: delivery.participant_id },
+      );
+      if (actionableError) {
+        throw new Error(`could not count requirements: ${actionableError.message}`);
+      }
+      outstandingCount = actionableIds?.length ?? 1;
+    } else {
+      // Legacy pre-per-participant delivery rows (queued before
+      // 20260723153342_reminders_per_participant.sql) have no participant_id at all — the shared
+      // selector is inherently per-Participant, so there is nothing to call it with. Fall back to
+      // the previous flat, whole-Case count for this one legacy shape only.
+      const { count, error: countError } = await admin
+        .from('requirements')
+        .select('id', { count: 'exact', head: true })
+        .eq('case_id', delivery.case_id)
+        .is('deleted_at', null)
+        .is('superseded_at', null)
+        .eq('status', 'outstanding');
+      if (countError) throw new Error(`could not count requirements: ${countError.message}`);
+      outstandingCount = count ?? 1;
+    }
 
     const email = parseInput(reminderEmailSchema, {
       to: delivery.destination,
       organizationName: caseRow.organization?.name ?? '',
       caseTitle: caseRow.title,
-      outstandingCount: outstanding ?? 1,
+      outstandingCount,
       actionUrl: buildActionUrl(delivery.grant_id),
     });
 
