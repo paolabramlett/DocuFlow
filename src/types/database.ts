@@ -523,6 +523,84 @@ export type Database = {
           },
         ]
       }
+      document_upload_sessions: {
+        Row: {
+          bucket: string
+          case_id: string
+          claimed_at: string | null
+          completed_at: string | null
+          completed_document_id: string | null
+          created_at: string
+          declared_content_type: string
+          declared_size_bytes: number
+          expires_at: string
+          id: string
+          organization_id: string
+          original_file_name: string
+          participant_id: string
+          requirement_id: string
+          reserved_document_id: string
+          signed_url_expires_at: string
+          status: string
+          storage_path: string
+        }
+        Insert: {
+          bucket?: string
+          case_id: string
+          claimed_at?: string | null
+          completed_at?: string | null
+          completed_document_id?: string | null
+          created_at?: string
+          declared_content_type: string
+          declared_size_bytes: number
+          expires_at: string
+          id?: string
+          organization_id: string
+          original_file_name: string
+          participant_id: string
+          requirement_id: string
+          reserved_document_id: string
+          signed_url_expires_at: string
+          status?: string
+          storage_path: string
+        }
+        Update: {
+          bucket?: string
+          case_id?: string
+          claimed_at?: string | null
+          completed_at?: string | null
+          completed_document_id?: string | null
+          created_at?: string
+          declared_content_type?: string
+          declared_size_bytes?: number
+          expires_at?: string
+          id?: string
+          organization_id?: string
+          original_file_name?: string
+          participant_id?: string
+          requirement_id?: string
+          reserved_document_id?: string
+          signed_url_expires_at?: string
+          status?: string
+          storage_path?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "document_upload_sessions_completed_document_id_fkey"
+            columns: ["completed_document_id"]
+            isOneToOne: false
+            referencedRelation: "documents"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "document_upload_sessions_organization_id_fkey"
+            columns: ["organization_id"]
+            isOneToOne: false
+            referencedRelation: "organizations"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       documents: {
         Row: {
           case_id: string
@@ -1112,6 +1190,18 @@ export type Database = {
       }
       create_organization: {
         Args: { organization_industry: string; organization_name: string }
+        Returns: string
+      }
+      create_upload_session: {
+        Args: {
+          p_declared_content_type: string
+          p_declared_size_bytes: number
+          p_original_file_name: string
+          p_requirement_id: string
+          p_reserved_document_id: string
+          p_signed_url_expires_at: string
+          p_storage_path: string
+        }
         Returns: string
       }
       emit_participant_invitation: {
