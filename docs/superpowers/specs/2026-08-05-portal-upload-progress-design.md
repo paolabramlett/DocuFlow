@@ -60,6 +60,14 @@ create table public.document_upload_sessions (
   original_file_name text not null,
   declared_content_type text not null,
   declared_size_bytes bigint not null,
+  -- Recorded at prepare time as now() + 2 hours — the empirically-confirmed default TTL of the
+  -- signed upload URL itself (verified against this project's local Storage stack: a minted
+  -- token's decoded iat/exp differ by exactly 7200 seconds). Not read by any code path yet — its
+  -- only purpose is observability: distinguishing "our own upload_session_expired (30-minute
+  -- window)" from "the signed URL token itself would also have expired by now" when diagnosing a
+  -- stuck upload. Today those two causes always collapse to the same recovery action (prepare
+  -- again), but this makes them distinguishable in the data without needing to decode a token.
+  signed_url_expires_at timestamptz not null,
   -- The eventual documents.id. Chosen here, before any documents row exists — so it cannot carry
   -- a foreign key yet. This is a reservation, not a reference.
   reserved_document_id uuid not null,
@@ -89,6 +97,10 @@ RLS: a Participant may `select`/`insert` their own sessions (scoped by `particip
 
 The risk: `finalize` must call out to Storage (`storage.info(path)`, a real network round-trip) before it can safely write `documents`. If `cancel` or the cleanup cron can act on the same session while that call is in flight, the object or the session record could be deleted or reused out from under `finalize`. The fix is an explicit `finalizing` state with a time-boxed lease — cancel and cleanup are structurally forbidden from touching a session in that state while its lease is live.
 
+**Lease duration: 5 minutes, justified, not a magic number.** The lease must comfortably exceed the worst-case wall-clock time of `storage.info()` (a single small HTTP call — empirically near-instantaneous against this project's Storage backend) plus `finalize_document_upload`'s own execution (a handful of single-row reads/writes under a lock already held). Five minutes is a wide, deliberately generous margin over that real cost — not tuned to any specific measured latency, and not the initial, unexamined 90 seconds. A future change to this number should re-state the same justification (worst-case Storage round-trip + RPC execution, with margin), not just pick a new figure.
+
+**Why no separate lease token/nonce is needed — traced against the exact race described during design review.** Consider: caller A claims at t=0 (`finalizing`, `claimed_at=0`); `storage.info()` takes unusually long, say 80s; the cleanup pass runs at t=91s (past a hypothetical short lease) and reclaims the session to `pending`; caller B claims at t=92s, finishes quickly, and completes the session (`status='completed'`) at t=93s; caller A's own `finalize_document_upload` call finally executes at t=95s. Does caller A's stale call corrupt anything? No: `finalize_document_upload` re-reads the session's *current* status under its own `FOR UPDATE` lock at the moment it runs — it does not trust that the caller who claimed it is still the rightful owner. At t=95s it sees `status = 'completed'` (set by caller B) and its own guard (`if status is not 'finalizing' then raise 'upload_session_not_finalizing'`) rejects the stale attempt outright. The worst outcome of a very late, reclaimed-out-from-under-it `finalize` call is wasted work (an unnecessary `storage.info()` call and a rejected RPC) — never a duplicate `documents` row, never corrupted state. This is a property of checking *live* status at the moment of the lock, not of any timing assumption — it holds regardless of how the 5-minute lease value is chosen. A lease token/nonce would add nothing beyond what this check already guarantees, so it's deliberately left out of the MVP; revisit only if a future change makes `finalize_document_upload`'s guard check something less strict than the row's current status.
+
 ### `claim_upload_session_for_finalize(p_session_id uuid)` — RPC, first call `finalizeUploadAction` makes
 
 ```sql
@@ -97,8 +109,8 @@ The risk: `finalize` must call out to Storage (`storage.info(path)`, a real netw
 --                            a retry of an already-finished session — this is deliberately the
 --                            FIRST branch checked, before anything else runs.
 -- status = 'finalizing'
---   claimed_at within lease (90s)     -> raise 'upload_finalize_in_progress'
---   claimed_at outside lease (stale)  -> reclaim: proceed as if 'pending'
+--   claimed_at within lease (5 minutes) -> raise 'upload_finalize_in_progress'
+--   claimed_at outside lease (stale)     -> reclaim: proceed as if 'pending'
 -- status = 'pending' (or just reclaimed) and not expired
 --                         -> status := 'finalizing', claimed_at := now(); return alreadyCompleted=false
 -- status = 'cancelled'    -> raise 'upload_session_cancelled'
@@ -152,11 +164,13 @@ Only one caller can ever win the `pending`/stale-`finalizing` → `finalizing` t
 
 ### Cleanup (cron, mirroring this project's existing `pg_cron` reminder pattern)
 
-A scheduled SQL function (`app.reclaim_and_expire_upload_sessions()`, called by `pg_cron` on a short interval, e.g. every 5 minutes):
-- `finalizing` rows with `claimed_at` older than the lease window → reclaimed to `pending` (if `expires_at` hasn't passed) or directly to `expired` (if it has). Never touches a `finalizing` row within its live lease.
-- `pending` rows with `expires_at` in the past → `expired`.
+Three separate, independently-runnable steps — not one combined pass — so that a failure in the external Storage-deletion step (step C) can never prevent the two purely-internal Postgres steps (A, B) from keeping the session table's state correct:
 
-A companion step (the actual Storage object deletion, an external HTTP call — same shape as the existing `send-reminders` Edge Function that already does external calls on a cron trigger in this codebase) deletes the Storage object for every row newly marked `expired` in this pass.
+**A. `app.reclaim_stale_finalizing_sessions()`** — SQL function, `pg_cron`, every few minutes: `finalizing` rows with `claimed_at` older than the 5-minute lease → `pending` (if `expires_at` hasn't passed) or directly `expired` (if it has). Never touches a `finalizing` row within its live lease. Runs independently of B and C.
+
+**B. `app.expire_stale_pending_sessions()`** — SQL function, `pg_cron`, same cadence: `pending` rows with `expires_at` in the past → `expired`. Independent of A and C — a `pending` session can expire on its own schedule regardless of whether any `finalizing` reclaim happened this pass.
+
+**C. Storage cleanup** — the actual object deletion, an external HTTP call (same shape as the existing `send-reminders` Edge Function that already does external calls on a cron trigger in this codebase), reading every `expired`/`cancelled` row whose Storage object hasn't been confirmed deleted yet and deleting it. Runs on its own schedule; a transient failure here leaves an orphaned object for the *next* run to retry — it never blocks A or B, and A/B having already moved a row to `expired`/`cancelled` is what makes it discoverable to C in the first place.
 
 ## 5. Signed upload URL reuse — verified empirically, not assumed
 
@@ -170,11 +184,11 @@ Tested directly against this project's local Supabase stack (not inferred from d
 
 ## 7. UI (contract, not final pixels)
 
-`RequirementCard`'s upload button gains: a determinate progress bar (`xhr.upload.onprogress` → percentage) once a `prepareUploadAction` call succeeds and the browser starts the direct PUT; a "Cancelar" affordance that calls `xhr.abort()` and, in parallel, `cancelUploadSessionAction(sessionId)`; on `finalize` returning `upload_finalize_in_progress`, a short automatic retry (the lease is only ~90s) rather than surfacing an error; on `upload_session_expired`/`upload_session_cancelled`, a message prompting the user to pick the file again (a fresh `prepareUploadAction` call — never a blind retry against a dead session).
+`RequirementCard`'s upload button gains: a determinate progress bar (`xhr.upload.onprogress` → percentage) once a `prepareUploadAction` call succeeds and the browser starts the direct PUT; a "Cancelar" affordance that calls `xhr.abort()` and, in parallel, `cancelUploadSessionAction(sessionId)`; on `finalize` returning `upload_finalize_in_progress`, a short automatic retry (the lease is 5 minutes, so a legitimate in-flight finalize resolves quickly relative to that) rather than surfacing an error; on `upload_session_expired`/`upload_session_cancelled`, a message prompting the user to pick the file again (a fresh `prepareUploadAction` call — never a blind retry against a dead session).
 
 ## 8. Testing plan
 
-- **Isolation (RPCs, real DB):** `claim_upload_session_for_finalize` — completed short-circuits without touching anything else; pending claims correctly; finalizing-within-lease is refused; finalizing-past-lease is reclaimed; cancelled/expired are refused with the right codes. `finalize_document_upload` — happy path creates exactly one `documents` row with the *verified* (not declared) size/content-type; re-validates requirement/grant/Case state at finalize time (a Case closed mid-upload is refused); idempotent on a second call once completed. `cancel_upload_session` — refuses mid-finalize; succeeds only from `pending`; idempotent from a terminal state. The reclaim/expire cleanup function — never touches a `finalizing` row within lease; correctly reclaims a stale one; correctly expires an overdue `pending` one.
+- **Isolation (RPCs, real DB):** `claim_upload_session_for_finalize` — completed short-circuits without touching anything else; pending claims correctly; finalizing-within-lease is refused; finalizing-past-lease is reclaimed; cancelled/expired are refused with the right codes. `finalize_document_upload` — happy path creates exactly one `documents` row with the *verified* (not declared) size/content-type; re-validates requirement/grant/Case state at finalize time (a Case closed mid-upload is refused); idempotent on a second call once completed; **the exact stale-claim race from design review**: claim, force the row to `pending` directly (simulating a reclaim), have a second flow complete the session, then call `finalize_document_upload` with the first (now-stale) claim's context and assert it's rejected with `upload_session_not_finalizing`, not a duplicate `documents` row. `cancel_upload_session` — refuses mid-finalize; succeeds only from `pending`; idempotent from a terminal state. `reclaim_stale_finalizing_sessions`/`expire_stale_pending_sessions` — each independently testable, including a test proving a failure/no-op in the (separately-tested) Storage-deletion step never prevents these two from running or from being tested in isolation from it.
 - **Concurrency:** two simultaneous `finalize` calls on the same session — exactly one performs the Storage inspection and insert; the other gets `upload_finalize_in_progress` or the completed short-circuit, never a duplicate `documents` row (mirrors this project's own established concurrency-test rigor from the Case Stages workflow feature — deterministic setup, real assertions on row counts, not a "some assertion passes" test).
 - **Security:** a Participant cannot claim/finalize/cancel another participant's session; the reserved path can't be redirected to a different Case/requirement (finalize takes only `sessionId`, never a path); the `upsert:false` empirical finding is captured as a permanent regression test (create a session, upload real bytes, attempt a second PUT with the same token and different bytes, assert `409` and that `.info()` is unchanged).
 - **Compatibility:** confirms nothing else that reads `documents`/calls `registerDocument` today is affected — this feature only changes the Portal's own upload entry point.
