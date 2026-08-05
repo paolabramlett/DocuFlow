@@ -149,6 +149,15 @@ export interface PortalState {
   readonly requirements: PortalRequirement[];
   readonly pendingCount: number;
   readonly isComplete: boolean;
+  /** Reopened Requirements from an already-completed stage that still need a correction — kept
+   *  distinct from the ordinary pending list so the client understands these are re-dos, not new
+   *  asks (docs/CLIENT_PORTAL.md §5). */
+  readonly correctionsPending: PortalRequirement[];
+  /** Per §5: every stage completed, no reopened-pending, no unassigned-pending. Mirrors
+   *  workflowDocumentationComplete's Staff-side definition (src/features/cases/queries.ts), but
+   *  derived independently here since the Portal never receives a stages[] array to check against
+   *  directly — only whether any visible Requirement still carries a stage at all. */
+  readonly workflowComplete: boolean;
 }
 
 /**
@@ -175,11 +184,23 @@ export async function getPortalState(client: DbClient, token: string): Promise<P
     throw new UseCaseError('not_found', 'No encontramos tu expediente.');
   }
 
-  const pendingCount = portalCase.requirements.filter(
-    (r) => r.state === 'pending' || r.state === 'rejected',
-  ).length;
+  const correctionsPending = portalCase.requirements.filter(
+    (r) => r.reopenedFromRequirementId !== null && (r.state === 'pending' || r.state === 'rejected'),
+  );
+  const activeStateItems = portalCase.requirements.filter(
+    (r) => r.reopenedFromRequirementId === null && (r.state === 'pending' || r.state === 'rejected'),
+  );
+  const pendingCount = correctionsPending.length + activeStateItems.length;
+  const hasWorkflow = portalCase.requirements.some((r) => r.stageStatus !== undefined);
+  const workflowComplete = hasWorkflow && pendingCount === 0;
 
-  return { ...portalCase, pendingCount, isComplete: pendingCount === 0 };
+  return {
+    ...portalCase,
+    pendingCount,
+    isComplete: pendingCount === 0,
+    correctionsPending,
+    workflowComplete,
+  };
 }
 
 // ------------------------------------------------------------------------------------------------

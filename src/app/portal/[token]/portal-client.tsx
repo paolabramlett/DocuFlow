@@ -315,8 +315,12 @@ function OtpCard({
 }
 
 // ---------- 4-8 · The checklist, pending first, with a quiet completion banner ----------
-function Checklist({ token, state, onChanged }: { token: string; state: PortalState; onChanged: () => void }) {
-  const pending = state.requirements.filter((r) => r.state === "pending" || r.state === "rejected");
+export function Checklist({ token, state, onChanged }: { token: string; state: PortalState; onChanged: () => void }) {
+  // Reopened items get their own "Correcciones pendientes" section below — excluded here so they
+  // never show up twice.
+  const pending = state.requirements.filter(
+    (r) => (r.state === "pending" || r.state === "rejected") && r.reopenedFromRequirementId === null,
+  );
   const resolved = state.requirements.filter((r) => r.state === "review" || r.state === "approved");
   // A Participant with zero Requirements is not "done" — there was never anything to complete
   // (design.md's documentation-complete rule: it requires at least one visible Requirement).
@@ -344,14 +348,36 @@ function Checklist({ token, state, onChanged }: { token: string; state: PortalSt
         <div className="text-sm font-medium text-royal-600">{state.organizationName}</div>
         <h1 className="mt-1 text-2xl font-semibold tracking-tight text-text-primary">{state.caseTitle}</h1>
 
+        {state.correctionsPending.length > 0 && (
+          <section className="mb-6 rounded-card border border-warning/30 bg-warning-bg/40 p-4">
+            <h3 className="text-sm font-semibold text-text-primary">Correcciones pendientes</h3>
+            <ul className="mt-2 space-y-1.5">
+              {state.correctionsPending.map((r) => (
+                <li key={r.id} className="text-sm text-text-primary">
+                  {r.label}
+                  {r.originalStageName && <span className="text-text-secondary"> ({r.originalStageName})</span>}
+                </li>
+              ))}
+            </ul>
+          </section>
+        )}
+        {state.workflowComplete && state.caseState === "open" && (
+          <div className="mb-6 rounded-card border border-success/20 bg-success-bg/60 px-5 py-4">
+            <p className="text-sm font-semibold text-text-primary">Workflow completo</p>
+            <p className="mt-1 text-xs text-text-secondary">No tienes acciones pendientes. El equipo continuará con el proceso.</p>
+          </div>
+        )}
+
         {caseClosed ? (
           <>
             <ClosedCaseBanner caseState={state.caseState} clientClosingNote={state.clientClosingNote} />
             <h2 className="mb-3 mt-8 text-sm font-semibold text-text-primary">Tus documentos</h2>
             <div className="space-y-3">
-              {state.requirements.map((r) => (
-                <RequirementCard key={r.id} token={token} r={r} onChanged={onChanged} readOnly />
-              ))}
+              {state.requirements
+                .filter((r) => r.reopenedFromRequirementId === null)
+                .map((r) => (
+                  <RequirementCard key={r.id} token={token} r={r} onChanged={onChanged} readOnly />
+                ))}
             </div>
           </>
         ) : documentationComplete ? (

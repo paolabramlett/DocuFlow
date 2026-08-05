@@ -28,6 +28,15 @@ export interface PortalRequirement {
   readonly fileName?: string;
   /** Set only when `state === 'approved'`: the moment the approving review was recorded. */
   readonly approvedAt?: string;
+  /** Present only for a Requirement belonging to a stage; used to group into "Correcciones
+   *  pendientes" vs. the active stage's own list. A 'locked' stage's Requirements never reach
+   *  this far — getPortalCase filters them out entirely, so the Portal never learns a future
+   *  stage exists. */
+  readonly stageStatus?: 'locked' | 'active' | 'completed';
+  /** The original stage's name, shown next to a reopened item so the client has the same context
+   *  Staff sees ("(Kick-Off)"). Present only when reopenedFromRequirementId is set. */
+  readonly originalStageName?: string;
+  readonly reopenedFromRequirementId: string | null;
 }
 
 export interface PortalCase {
@@ -54,6 +63,9 @@ interface RawRequirement {
   label: string;
   position: number;
   status: string;
+  stage_id: string | null;
+  reopened_from_requirement_id: string | null;
+  stage: { name: string; status: string } | null;
   documents: RawDocument[];
 }
 
@@ -110,6 +122,7 @@ export async function getPortalCase(client: DbClient, participantId: string): Pr
     .select(
       `case:cases(title, state, client_closing_note, organization:organizations(name)),
        requirements(id, label, position, status, deleted_at, superseded_at,
+         stage_id, reopened_from_requirement_id, stage:case_stages(name, status),
          documents(id, file_name, created_at, reviews(decision, reason, created_at)))`,
     )
     .eq('id', participantId)
@@ -121,7 +134,9 @@ export async function getPortalCase(client: DbClient, participantId: string): Pr
   const requirements = (data.requirements ?? [])
     .filter((r) => !r.deleted_at && !r.superseded_at)
     .map((r) => {
-      const derived = deriveState(r as RawRequirement);
+      const raw = r as RawRequirement;
+      const derived = deriveState(raw);
+      const stageStatus = raw.stage?.status as ('locked' | 'active' | 'completed') | undefined;
       return {
         id: r.id,
         label: r.label,
@@ -130,8 +145,18 @@ export async function getPortalCase(client: DbClient, participantId: string): Pr
         documentId: derived.documentId,
         fileName: derived.fileName,
         approvedAt: derived.approvedAt,
+        stageStatus,
+        // Only meaningful next to a reopened item — a reopened row always carries its original
+        // (necessarily 'completed') stage's own stage_id, per reopen_requirement's own guard, so
+        // this needs no separate lookup: raw.stage IS that original stage.
+        originalStageName: raw.reopened_from_requirement_id !== null ? raw.stage?.name : undefined,
+        reopenedFromRequirementId: raw.reopened_from_requirement_id,
       };
     })
+    // A 'locked' future stage's Requirements are never shown to the client at all — not even to
+    // count toward pendingCount — so the Portal can't spoil what's coming next. Nothing else needs
+    // to filter this out downstream once it's gone here.
+    .filter((r) => r.stageStatus !== 'locked')
     .sort((a, b) => STATE_ORDER[a.state] - STATE_ORDER[b.state]);
 
   return {
