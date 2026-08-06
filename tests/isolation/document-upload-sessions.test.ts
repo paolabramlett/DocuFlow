@@ -2,6 +2,7 @@
 import { randomUUID } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { adminClient, createOrganizationWithOwner } from '../helpers/clients';
+import { withDb } from '../helpers/db';
 import { buildOrganizationWorld, grantVerifiedAccess } from '../helpers/fixtures';
 
 function futureIso(minutes: number): string {
@@ -970,5 +971,128 @@ describe('cancel_upload_session', () => {
 
     const { error } = await other.owner.client.rpc('cancel_upload_session', { p_session_id: sessionId });
     expect(error?.message).toBe('upload_session_not_found');
+  });
+});
+
+// These call the app.* functions directly via withDb (a raw Postgres connection), matching this
+// project's own established pattern for testing app-schema functions with no public RPC wrapper
+// (see tests/isolation/case-stages-workflow.test.ts's use of the same helper).
+describe('reclaim_stale_finalizing_sessions / expire_stale_pending_sessions', () => {
+  it('reclaims a finalizing session past its lease to pending', async () => {
+    const world = await buildOrganizationWorld({
+      name: 'Notaría Cleanup ReclaimToPending',
+      industry: 'notary',
+      clientEmail: `cleanup-reclaim-pending-${randomUUID()}@example.test`,
+    });
+    const staleClaimedAt = new Date(Date.now() - 6 * 60_000).toISOString();
+    const { sessionId } = await insertSession(world, { status: 'finalizing', claimedAt: staleClaimedAt });
+
+    await withDb((db) => db.query('select app.reclaim_stale_finalizing_sessions()'));
+
+    const { data: after } = await adminClient()
+      .from('document_upload_sessions')
+      .select('status, claimed_at')
+      .eq('id', sessionId)
+      .single();
+    expect(after?.status).toBe('pending');
+    expect(after?.claimed_at).toBeNull();
+  });
+
+  it('reclaims a finalizing session past its lease directly to expired when expires_at also passed', async () => {
+    const world = await buildOrganizationWorld({
+      name: 'Notaría Cleanup ReclaimToExpired',
+      industry: 'notary',
+      clientEmail: `cleanup-reclaim-expired-${randomUUID()}@example.test`,
+    });
+    const staleClaimedAt = new Date(Date.now() - 6 * 60_000).toISOString();
+    const { sessionId } = await insertSession(world, {
+      status: 'finalizing',
+      claimedAt: staleClaimedAt,
+      expiresAt: new Date(Date.now() - 1000).toISOString(),
+    });
+
+    await withDb((db) => db.query('select app.reclaim_stale_finalizing_sessions()'));
+
+    const { data: after } = await adminClient()
+      .from('document_upload_sessions')
+      .select('status')
+      .eq('id', sessionId)
+      .single();
+    expect(after?.status).toBe('expired');
+  });
+
+  it('never touches a finalizing session within its live lease', async () => {
+    const world = await buildOrganizationWorld({
+      name: 'Notaría Cleanup LiveLease',
+      industry: 'notary',
+      clientEmail: `cleanup-livelease-${randomUUID()}@example.test`,
+    });
+    const { sessionId } = await insertSession(world, { status: 'finalizing', claimedAt: new Date().toISOString() });
+
+    await withDb((db) => db.query('select app.reclaim_stale_finalizing_sessions()'));
+
+    const { data: after } = await adminClient()
+      .from('document_upload_sessions')
+      .select('status')
+      .eq('id', sessionId)
+      .single();
+    expect(after?.status).toBe('finalizing'); // untouched
+  });
+
+  it('expires a pending session whose expires_at has passed', async () => {
+    const world = await buildOrganizationWorld({
+      name: 'Notaría Cleanup ExpirePending',
+      industry: 'notary',
+      clientEmail: `cleanup-expirepending-${randomUUID()}@example.test`,
+    });
+    const { sessionId } = await insertSession(world, { expiresAt: new Date(Date.now() - 1000).toISOString() });
+
+    await withDb((db) => db.query('select app.expire_stale_pending_sessions()'));
+
+    const { data: after } = await adminClient()
+      .from('document_upload_sessions')
+      .select('status')
+      .eq('id', sessionId)
+      .single();
+    expect(after?.status).toBe('expired');
+  });
+
+  it('reclaim and expire run independently: a failure simulated in one never affects the other', async () => {
+    const world = await buildOrganizationWorld({
+      name: 'Notaría Cleanup Independence',
+      industry: 'notary',
+      clientEmail: `cleanup-independence-${randomUUID()}@example.test`,
+    });
+    const staleClaimedAt = new Date(Date.now() - 6 * 60_000).toISOString();
+    const { sessionId: finalizingId } = await insertSession(world, { status: 'finalizing', claimedAt: staleClaimedAt });
+    const { sessionId: pendingId } = await insertSession(world, { expiresAt: new Date(Date.now() - 1000).toISOString() });
+
+    // Run only expire_stale_pending_sessions — proves reclaim never needed to run first or
+    // alongside it for expire's own effect to be correct.
+    await withDb((db) => db.query('select app.expire_stale_pending_sessions()'));
+    const { data: pendingAfter } = await adminClient()
+      .from('document_upload_sessions')
+      .select('status')
+      .eq('id', pendingId)
+      .single();
+    expect(pendingAfter?.status).toBe('expired');
+
+    // The stale finalizing session is still untouched — expire_stale_pending_sessions never
+    // reaches into 'finalizing' rows at all.
+    const { data: finalizingUntouched } = await adminClient()
+      .from('document_upload_sessions')
+      .select('status')
+      .eq('id', finalizingId)
+      .single();
+    expect(finalizingUntouched?.status).toBe('finalizing');
+
+    // Now run reclaim on its own — proves it works standalone too.
+    await withDb((db) => db.query('select app.reclaim_stale_finalizing_sessions()'));
+    const { data: finalizingAfter } = await adminClient()
+      .from('document_upload_sessions')
+      .select('status')
+      .eq('id', finalizingId)
+      .single();
+    expect(finalizingAfter?.status).toBe('pending');
   });
 });

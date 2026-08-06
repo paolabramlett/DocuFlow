@@ -410,6 +410,13 @@ allow_dynamic_registration = false
 [functions.send-reminders]
 verify_jwt = true
 
+# The upload session cleanup drainer (Storage-deletion step C). Same shape as send-reminders above:
+# verify_jwt stays on for the platform's own JWT check, and the function additionally enforces its
+# own internal trigger secret (see the function source), so an ordinary client with only an anon
+# JWT still cannot invoke a drain.
+[functions.cleanup-upload-sessions]
+verify_jwt = true
+
 [edge_runtime]
 enabled = true
 # Supported request policies: `oneshot`, `per_worker`.
