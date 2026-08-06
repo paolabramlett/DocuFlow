@@ -13,10 +13,12 @@ import { fail, ok, type ActionResult } from "@/application/errors";
 import {
   getClientDocumentUrl,
   getPortalState,
+  prepareUpload,
   requestAccessCode,
   uploadRequirementDocument,
   verifyAccessCode,
   type PortalState,
+  type PrepareUploadResult,
 } from "@/application/client-portal";
 
 export async function requestAccessCodeAction(token: string): Promise<ActionResult<null>> {
@@ -85,6 +87,21 @@ export async function uploadRequirementDocumentAction(
     );
 
     return ok(null);
+  } catch (error) {
+    return fail(error);
+  }
+}
+
+export async function prepareUploadAction(
+  token: string,
+  requirementId: string,
+  fileName: string,
+  contentType: string,
+  sizeBytes: number,
+): Promise<ActionResult<PrepareUploadResult>> {
+  try {
+    const supabase = await createClient();
+    return ok(await prepareUpload(supabase, { token, requirementId, fileName, contentType, sizeBytes }));
   } catch (error) {
     return fail(error);
   }

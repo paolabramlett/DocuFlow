@@ -333,6 +333,138 @@ export async function uploadRequirementDocument(
 }
 
 // ------------------------------------------------------------------------------------------------
+// 6 · Prepare an upload session (Step 1 of prepare/upload/finalize)
+// ------------------------------------------------------------------------------------------------
+
+const prepareUploadInputSchema = z.object({
+  token: z.string().min(1),
+  requirementId: z.string().uuid(),
+  fileName: z.string().trim().min(1).max(500),
+  contentType: z.enum(ALLOWED_CONTENT_TYPES),
+  sizeBytes: z.number().int().positive().max(MAX_DOCUMENT_BYTES),
+});
+
+export interface PrepareUploadInput {
+  readonly token: string;
+  readonly requirementId: string;
+  readonly fileName: string;
+  readonly contentType: string;
+  readonly sizeBytes: number;
+}
+
+export interface PrepareUploadResult {
+  readonly sessionId: string;
+  readonly signedUrl: string;
+  readonly token: string;
+  readonly path: string;
+}
+
+const CREATE_UPLOAD_SESSION_MESSAGES: Record<string, string> = {
+  requirement_not_found: 'Ese requisito ya no está disponible para ti.',
+  requirement_already_satisfied: 'Este requisito ya fue aprobado y no se puede reemplazar.',
+  file_too_large: 'El archivo es demasiado grande. El límite es 25 MB.',
+  content_type_not_allowed: 'Ese tipo de archivo no está permitido. Sube un PDF o una imagen.',
+};
+
+function mapCreateUploadSessionError(error: { message: string }): UseCaseError {
+  const message = CREATE_UPLOAD_SESSION_MESSAGES[error.message];
+  if (!message) return new UseCaseError('unexpected', 'No pudimos preparar la subida. Intenta de nuevo.');
+  const reason = error.message === 'requirement_not_found' ? 'not_found' : 'conflict';
+  return new UseCaseError(reason, message);
+}
+
+/**
+ * Step 1 of the prepare/upload/finalize flow (design.md, portal-upload-progress). Validates the
+ * grant/permission up front for a fast, friendly error, then delegates the actual session
+ * creation to create_upload_session (Task 1) — a security definer RPC, never a raw `.insert()` on
+ * document_upload_sessions (there is no insert RLS policy for any client role; creation is fully
+ * server-encapsulated, exactly like every state transition already is). The RPC re-validates the
+ * requirement/participant/size/content-type itself, so this function's own checks are a UX
+ * fast-path, not the actual security boundary — the same "don't trust a single layer" pattern
+ * this codebase already uses (schemas.ts's own doc comment on ALLOWED_CONTENT_TYPES/
+ * MAX_DOCUMENT_BYTES: "two enforcement points on purpose").
+ *
+ * create_upload_session itself now generates reserved_document_id/storage_path server-side (Task
+ * 1's own review found the original client-generates-then-passes-in design let a caller supply an
+ * arbitrary storage_path or collide reserved_document_id with someone else's documents.id) — so
+ * this function passes only the 5 declarative fields and uses the RPC's own returned storage_path
+ * as the path it mints the signed URL for, never a value it computed itself.
+ *
+ * Reserves the session row FIRST, then mints the signed upload URL — never the reverse order,
+ * which would leave a valid upload credential with no internal record if minting failed after the
+ * row existed. If minting fails, the session is cancelled via cancel_upload_session (Task 4) —
+ * not a raw `.update()`, for the same reason creation itself isn't a raw `.insert()`.
+ */
+export async function prepareUpload(client: DbClient, input: PrepareUploadInput): Promise<PrepareUploadResult> {
+  let parsed;
+  try {
+    parsed = parseInput(prepareUploadInputSchema, input);
+  } catch (error) {
+    if (error instanceof ValidationError) {
+      throw new UseCaseError('validation', 'Revisa el archivo: solo PDF o imágenes de hasta 25 MB.', error.issues);
+    }
+    throw error;
+  }
+
+  const grant = await resolveMyGrant(client, parsed.token);
+  if (!grant || !grant.isActive) {
+    throw new UseCaseError('forbidden', 'Tu acceso a este expediente ya no está disponible.');
+  }
+  if (grant.permission !== 'upload') {
+    throw new UseCaseError('forbidden', 'No puedes subir documentos en este momento.');
+  }
+
+  const { data: requirement, error: reqError } = await client
+    .from('requirements')
+    .select('organization_id, case_id, participant_id, status')
+    .eq('id', parsed.requirementId)
+    .maybeSingle();
+
+  if (reqError) throw new UseCaseError('unexpected', 'No pudimos leer ese requisito.');
+  if (!requirement || requirement.participant_id !== grant.participantId) {
+    throw new UseCaseError('not_found', 'Ese requisito ya no está disponible para ti.');
+  }
+  if (requirement.status === 'satisfied') {
+    throw new UseCaseError('conflict', 'Este requisito ya fue aprobado y no se puede reemplazar.');
+  }
+
+  const signedUrlExpiresAt = new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString();
+
+  const { data: created, error: createError } = await client.rpc('create_upload_session', {
+    p_requirement_id: parsed.requirementId,
+    p_original_file_name: parsed.fileName,
+    p_declared_content_type: parsed.contentType,
+    p_declared_size_bytes: parsed.sizeBytes,
+    p_signed_url_expires_at: signedUrlExpiresAt,
+  });
+
+  // The Supabase client surfaces a `returns table (...)` RPC as an array of rows, even for a
+  // single-row result — confirmed empirically against the local RPC, not assumed from the SQL
+  // signature alone.
+  const session = created?.[0];
+
+  if (createError || !session) {
+    throw mapCreateUploadSessionError(createError ?? { message: '' });
+  }
+
+  const { sessionId, storagePath } = { sessionId: session.session_id, storagePath: session.storage_path };
+
+  const { data: signed, error: signError } = await client.storage
+    .from(CASE_DOCUMENTS_BUCKET)
+    .createSignedUploadUrl(storagePath);
+
+  if (signError || !signed) {
+    // The row exists but the credential never did — cancel it via the same RPC every other
+    // pending->cancelled transition uses, rather than a raw update, for the same "no direct
+    // writes from client code" reasoning as creation itself.
+    await client.rpc('cancel_upload_session', { p_session_id: sessionId });
+    throw new UseCaseError('forbidden', 'No pudimos preparar la subida. Intenta de nuevo.');
+  }
+
+  return { sessionId, signedUrl: signed.signedUrl, token: signed.token, path: storagePath };
+}
+
+// ------------------------------------------------------------------------------------------------
 // 8 · View/download a Document the client submitted themselves
 // ------------------------------------------------------------------------------------------------
 
