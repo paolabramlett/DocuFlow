@@ -14,11 +14,15 @@ import type { FailureReason } from "@/application/errors";
 import type { InvitationLanding, PortalState } from "@/application/client-portal";
 import type { PortalRequirement } from "@/features/case-access/portal-queries";
 import {
+  cancelUploadSessionAction,
+  finalizeUploadAction,
   getClientDocumentUrlAction,
+  prepareUploadAction,
   requestAccessCodeAction,
   verifyAccessCodeAction,
   getPortalStateAction,
 } from "../actions";
+import { uploadFileDirectly } from "@/lib/upload/direct-upload";
 import {
   IconCheck,
   IconClock,
@@ -498,13 +502,48 @@ function RequirementCard({
     const file = e.target.files?.[0];
     e.target.value = "";
     if (!file) return;
+
     setUploadError(null);
-    // Task 8 fills in: prepareUploadAction -> uploadFileDirectly (this module) -> finalizeUploadAction,
-    // driving setUploadPhase/setUploadPercent as the upload progresses and calling onChanged() once
-    // finalizeUploadAction succeeds. This task only establishes uploadPhase/uploadPercent/
-    // abortControllerRef and their UI, so reference them here (unused otherwise) to keep this
-    // intentionally partial stub passing `noUnusedLocals` until Task 8 invokes them for real.
-    void [onChanged, setUploadPhase, setUploadPercent];
+    setUploadPhase("uploading");
+    setUploadPercent(0);
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+
+    const prepared = await prepareUploadAction(token, r.id, file.name, file.type, file.size);
+    if (!prepared.ok) {
+      setUploadError(prepared.message);
+      setUploadPhase("idle");
+      return;
+    }
+
+    try {
+      await uploadFileDirectly({
+        signedUrl: prepared.data.signedUrl,
+        token: prepared.data.token,
+        file,
+        onProgress: setUploadPercent,
+        signal: controller.signal,
+      });
+    } catch (cause) {
+      if (cause instanceof DOMException && cause.name === "AbortError") {
+        await cancelUploadSessionAction(prepared.data.sessionId);
+        setUploadPhase("idle");
+        return;
+      }
+      setUploadError("No pudimos subir el archivo. Vuelve a intentarlo.");
+      setUploadPhase("idle");
+      return;
+    }
+
+    setUploadPhase("finalizing");
+    const finalized = await finalizeUploadAction(prepared.data.sessionId);
+    setUploadPhase("idle");
+
+    if (!finalized.ok) {
+      setUploadError(finalized.message);
+      return;
+    }
+    onChanged();
   }
 
   function cancelUpload() {

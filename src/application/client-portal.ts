@@ -465,6 +465,116 @@ export async function prepareUpload(client: DbClient, input: PrepareUploadInput)
 }
 
 // ------------------------------------------------------------------------------------------------
+// 7 · Finalize / cancel an upload session (Steps 3 and cancel-path of prepare/upload/finalize)
+// ------------------------------------------------------------------------------------------------
+
+// No 'not_authorized' key: RLS on document_upload_sessions already scopes every read to the
+// caller's own participant_id, so an inaccessible session is indistinguishable from a
+// nonexistent one at the RPC layer (upload_session_not_found covers both) — see Task 2's
+// claim_upload_session_for_finalize RPC comment for the full reasoning, matching this codebase's
+// established getPortalCase precedent.
+const UPLOAD_SESSION_MESSAGES: Record<string, string> = {
+  upload_session_not_found: 'Esa sesión de subida ya no existe.',
+  upload_finalize_in_progress: 'Estamos confirmando tu archivo, intenta de nuevo en unos segundos.',
+  upload_session_cancelled: 'Esta subida fue cancelada. Selecciona el archivo de nuevo.',
+  upload_session_expired: 'Esta subida expiró. Selecciona el archivo de nuevo.',
+  upload_session_not_finalizing: 'Esta subida ya no está en curso.',
+  requirement_already_satisfied: 'Este requisito ya fue aprobado y no se puede reemplazar.',
+  grant_no_longer_active: 'Tu acceso a este expediente ya no está disponible.',
+  case_not_open: 'Este expediente ya no está abierto.',
+  upload_already_completed: 'Esta subida ya se completó.',
+};
+
+function mapUploadSessionError(error: { message: string }): UseCaseError {
+  const message = UPLOAD_SESSION_MESSAGES[error.message];
+  if (!message) return new UseCaseError('unexpected', 'No pudimos procesar la subida. Intenta de nuevo.');
+  const reason =
+    error.message === 'upload_session_not_found' ? 'not_found'
+    : error.message === 'requirement_already_satisfied' ? 'conflict'
+    : 'conflict';
+  return new UseCaseError(reason, message);
+}
+
+/**
+ * Step 3 of the prepare/upload/finalize flow. Calls claim_upload_session_for_finalize FIRST — if
+ * the session is already completed, this returns immediately without ever calling Storage.info().
+ * Only when not already completed does it inspect the real uploaded object and call
+ * finalize_document_upload with the VERIFIED (not declared) size/content-type.
+ */
+export async function finalizeUpload(client: DbClient, sessionId: string): Promise<string> {
+  const { data: claimed, error: claimError } = await client
+    .rpc('claim_upload_session_for_finalize', { p_session_id: sessionId })
+    .single();
+  if (claimError) throw mapUploadSessionError(claimError);
+  if (claimed.already_completed) return claimed.completed_document_id!;
+
+  const { data: session, error: readError } = await client
+    .from('document_upload_sessions')
+    .select('bucket, storage_path, declared_size_bytes, declared_content_type')
+    .eq('id', sessionId)
+    .single();
+  if (readError || !session) {
+    throw new UseCaseError('unexpected', 'No pudimos confirmar la subida. Intenta de nuevo.');
+  }
+
+  const { data: info, error: infoError } = await client.storage.from(session.bucket).info(session.storage_path);
+  if (infoError || !info) {
+    throw new UseCaseError('unexpected', 'No encontramos el archivo subido. Intenta de nuevo.');
+  }
+  if (info.size == null || info.size <= 0 || info.size !== session.declared_size_bytes) {
+    throw new UseCaseError('validation', 'El archivo subido no coincide con lo esperado. Intenta de nuevo.');
+  }
+
+  const { data: documentId, error: finalizeError } = await client.rpc('finalize_document_upload', {
+    p_session_id: sessionId,
+    p_verified_size_bytes: info.size,
+    p_verified_content_type: info.contentType ?? session.declared_content_type,
+  });
+  if (finalizeError) throw mapUploadSessionError(finalizeError);
+
+  return documentId!;
+}
+
+/**
+ * Cancels a pending upload session and best-effort deletes its Storage object. The RPC
+ * (cancel_upload_session, Task 4) is the actual state transition; the Storage delete afterward is
+ * cleanup, not the source of truth — a failure to delete the object is logged but never surfaces
+ * to the caller, since the session itself is already correctly cancelled either way and a later
+ * cleanup job can still reclaim the orphaned object.
+ *
+ * That "later cleanup job" is not a rare fallback here — it is, in practice, the ONLY path that
+ * actually removes the object for a real Participant caller. `client` runs as the Participant
+ * under RLS, and case_documents_delete_by_member (supabase/migrations/20260722194115_storage_buckets.sql)
+ * grants delete on storage.objects to Organization members only, by explicit design ("Clients
+ * never update or delete: a document they replace is a new upload plus a new Review, which keeps
+ * the history intact" — that migration's own comment). Confirmed empirically while writing this
+ * function: `.remove()` here does not error for a Participant caller, it just deletes zero rows
+ * (`{ data: [], error: null }`) — RLS silently filters the target out rather than surfacing a
+ * failure. This call is kept anyway (harmless, and does work for the rarer case of a caller that
+ * happens to hold elevated rights) but the object's guaranteed eventual removal is the async
+ * Storage-deletion step described in supabase/migrations/20260805170400_upload_session_cleanup.sql's
+ * own header comment (a separate, privileged Edge Function on a cron cadence), not this line.
+ */
+export async function cancelUploadSession(client: DbClient, sessionId: string): Promise<void> {
+  const { data: session } = await client
+    .from('document_upload_sessions')
+    .select('bucket, storage_path')
+    .eq('id', sessionId)
+    .maybeSingle();
+
+  const { error } = await client.rpc('cancel_upload_session', { p_session_id: sessionId });
+  if (error) throw mapUploadSessionError(error);
+
+  if (session) {
+    try {
+      await client.storage.from(session.bucket).remove([session.storage_path]);
+    } catch (cause) {
+      console.error("Failed to delete a cancelled upload session's Storage object", { sessionId, cause });
+    }
+  }
+}
+
+// ------------------------------------------------------------------------------------------------
 // 8 · View/download a Document the client submitted themselves
 // ------------------------------------------------------------------------------------------------
 

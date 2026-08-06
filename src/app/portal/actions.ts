@@ -11,6 +11,8 @@
 import { createClient } from "@/lib/supabase/server";
 import { fail, ok, type ActionResult } from "@/application/errors";
 import {
+  cancelUploadSession,
+  finalizeUpload,
   getClientDocumentUrl,
   getPortalState,
   prepareUpload,
@@ -102,6 +104,26 @@ export async function prepareUploadAction(
   try {
     const supabase = await createClient();
     return ok(await prepareUpload(supabase, { token, requirementId, fileName, contentType, sizeBytes }));
+  } catch (error) {
+    return fail(error);
+  }
+}
+
+export async function finalizeUploadAction(sessionId: string): Promise<ActionResult<{ documentId: string }>> {
+  try {
+    const supabase = await createClient();
+    const documentId = await finalizeUpload(supabase, sessionId);
+    return ok({ documentId });
+  } catch (error) {
+    return fail(error);
+  }
+}
+
+export async function cancelUploadSessionAction(sessionId: string): Promise<ActionResult<null>> {
+  try {
+    const supabase = await createClient();
+    await cancelUploadSession(supabase, sessionId);
+    return ok(null);
   } catch (error) {
     return fail(error);
   }
