@@ -350,6 +350,7 @@ async function insertSession(
     claimedAt: string | null;
     expiresAt: string;
     completedDocumentId: string | null;
+    storageDeletedAt: string | null;
   }> = {},
 ) {
   const reservedDocumentId = randomUUID();
@@ -400,6 +401,7 @@ async function insertSession(
       claimed_at: overrides.claimedAt ?? null,
       completed_document_id: completedDocumentId,
       completed_at: completedDocumentId ? new Date().toISOString() : null,
+      storage_deleted_at: overrides.storageDeletedAt ?? null,
     })
     .select('id, reserved_document_id')
     .single();
@@ -1120,5 +1122,93 @@ describe('reclaim_stale_finalizing_sessions / expire_stale_pending_sessions', ()
       .eq('id', finalizingId)
       .single();
     expect(finalizingAfter?.status).toBe('pending');
+  });
+});
+describe('purge_expired_upload_sessions (retention purge, Important #5 fix)', () => {
+  it('hard-deletes a terminal row whose Storage object was confirmed removed more than 30 days ago', async () => {
+    const world = await buildOrganizationWorld({
+      name: 'Notaría Purge OldConfirmed',
+      industry: 'notary',
+      clientEmail: `purge-old-confirmed-${randomUUID()}@example.test`,
+    });
+    const oldStorageDeletedAt = new Date(Date.now() - 31 * 24 * 60 * 60_000).toISOString();
+    const { sessionId } = await insertSession(world, { status: 'cancelled', storageDeletedAt: oldStorageDeletedAt });
+
+    await withDb((db) => db.query('select app.purge_expired_upload_sessions()'));
+
+    const { data: after } = await adminClient()
+      .from('document_upload_sessions')
+      .select('id')
+      .eq('id', sessionId)
+      .maybeSingle();
+    expect(after).toBeNull();
+  });
+
+  it('never purges a terminal row whose storage_deleted_at has not passed the 30-day window yet', async () => {
+    const world = await buildOrganizationWorld({
+      name: 'Notaría Purge TooRecent',
+      industry: 'notary',
+      clientEmail: `purge-too-recent-${randomUUID()}@example.test`,
+    });
+    const recentStorageDeletedAt = new Date(Date.now() - 1 * 24 * 60 * 60_000).toISOString();
+    const { sessionId } = await insertSession(world, { status: 'expired', storageDeletedAt: recentStorageDeletedAt });
+
+    await withDb((db) => db.query('select app.purge_expired_upload_sessions()'));
+
+    const { data: after } = await adminClient()
+      .from('document_upload_sessions')
+      .select('id')
+      .eq('id', sessionId)
+      .maybeSingle();
+    expect(after).not.toBeNull();
+  });
+
+  it('never purges a terminal row whose Storage object has not been confirmed removed (storage_deleted_at still null), no matter how old', async () => {
+    const world = await buildOrganizationWorld({
+      name: 'Notaría Purge UnconfirmedNeverDeleted',
+      industry: 'notary',
+      clientEmail: `purge-unconfirmed-${randomUUID()}@example.test`,
+    });
+    const { sessionId } = await insertSession(world, { status: 'cancelled', storageDeletedAt: null });
+    // Backdate created_at directly — insertSession itself always defaults to now().
+    await adminClient()
+      .from('document_upload_sessions')
+      .update({ created_at: new Date(Date.now() - 60 * 24 * 60 * 60_000).toISOString() })
+      .eq('id', sessionId);
+
+    await withDb((db) => db.query('select app.purge_expired_upload_sessions()'));
+
+    const { data: after } = await adminClient()
+      .from('document_upload_sessions')
+      .select('id, storage_deleted_at')
+      .eq('id', sessionId)
+      .maybeSingle();
+    expect(after).not.toBeNull();
+    expect(after?.storage_deleted_at).toBeNull();
+  });
+
+  it('never purges a completed row, even with an old storage_deleted_at forced in directly (defense-in-depth: the real pipeline never sets storage_deleted_at for a completed session)', async () => {
+    const world = await buildOrganizationWorld({
+      name: 'Notaría Purge NeverCompleted',
+      industry: 'notary',
+      clientEmail: `purge-never-completed-${randomUUID()}@example.test`,
+    });
+    const oldStorageDeletedAt = new Date(Date.now() - 60 * 24 * 60 * 60_000).toISOString();
+    const { sessionId } = await insertSession(world, { status: 'completed' });
+    // Force storage_deleted_at directly, since insertSession's normal completed path never sets
+    // it (there is no code path that would) — this simulates the worst case, not a real one.
+    await adminClient()
+      .from('document_upload_sessions')
+      .update({ storage_deleted_at: oldStorageDeletedAt })
+      .eq('id', sessionId);
+
+    await withDb((db) => db.query('select app.purge_expired_upload_sessions()'));
+
+    const { data: after } = await adminClient()
+      .from('document_upload_sessions')
+      .select('id')
+      .eq('id', sessionId)
+      .maybeSingle();
+    expect(after).not.toBeNull();
   });
 });

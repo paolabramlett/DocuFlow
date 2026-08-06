@@ -542,6 +542,7 @@ export type Database = {
           reserved_document_id: string
           signed_url_expires_at: string
           status: string
+          storage_deleted_at: string | null
           storage_path: string
         }
         Insert: {
@@ -562,6 +563,7 @@ export type Database = {
           reserved_document_id: string
           signed_url_expires_at: string
           status?: string
+          storage_deleted_at?: string | null
           storage_path: string
         }
         Update: {
@@ -582,6 +584,7 @@ export type Database = {
           reserved_document_id?: string
           signed_url_expires_at?: string
           status?: string
+          storage_deleted_at?: string | null
           storage_path?: string
         }
         Relationships: [

@@ -47,15 +47,20 @@ Deno.serve(async (request: Request) => {
     { auth: { persistSession: false } },
   );
 
-  // Rows in a terminal state whose Storage object hasn't been confirmed removed. There's no
-  // separate "storage_deleted_at" column in this MVP — a session in ('expired','cancelled') is
-  // simply attempted every run; a successful storage.remove() on an already-absent object is not
-  // an error (Supabase Storage's remove() is idempotent for a missing key), so re-attempting a
-  // row already cleaned up in a prior run is harmless, not a bug.
+  // Rows in a terminal state whose Storage object hasn't been CONFIRMED removed yet —
+  // `storage_deleted_at is null` is the marker (supabase/migrations/20260805170500_upload_session_retention.sql).
+  // Without this filter (and the ORDER BY below), once more than BATCH_SIZE terminal rows ever
+  // accumulated, PostgREST would keep re-returning the same already-cleaned rows every run and
+  // never reach newly-cancelled sessions past the batch — this function would silently stop
+  // working. `storage.remove()` on an already-absent object is still not an error (idempotent for
+  // a missing key), so a row that briefly races between this query and the mark-done UPDATE below
+  // is harmless either way, not a correctness bug.
   const { data: sessions, error } = await admin
     .from('document_upload_sessions')
     .select('id, bucket, storage_path')
     .in('status', ['expired', 'cancelled'])
+    .is('storage_deleted_at', null)
+    .order('created_at', { ascending: true })
     .limit(BATCH_SIZE);
 
   if (error) return Response.json({ error: `read sessions: ${error.message}` }, { status: 500 });
@@ -67,6 +72,13 @@ Deno.serve(async (request: Request) => {
     try {
       const { error: removeError } = await admin.storage.from(s.bucket).remove([s.storage_path]);
       if (removeError) throw new Error(removeError.message);
+
+      const { error: markError } = await admin
+        .from('document_upload_sessions')
+        .update({ storage_deleted_at: new Date().toISOString() })
+        .eq('id', s.id);
+      if (markError) throw new Error(markError.message);
+
       deleted += 1;
     } catch (cause) {
       failed += 1;
