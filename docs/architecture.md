@@ -211,6 +211,18 @@ The follow-up engine is what the product exists to be. Two mechanisms, kept sepa
 
 **Suppression is a selection concern.** A Case that is due by the clock but should not be chased — completed, cancelled, grant revoked or expired, all requirements satisfied, cap reached, permission `none` — is excluded by `select_due_reminders`, which reuses the same active-grant definition as `app.granted_case_ids`. There is one definition of "active grant" in the system.
 
+## Upload session cleanup
+
+The same cron + Edge Function shape as the reminder engine, applied to orphaned Storage objects
+from the Portal's prepare/upload/finalize flow. Three steps, kept separate: `pg_cron` runs
+`app.reclaim_stale_finalizing_sessions()` and `app.expire_stale_pending_sessions()` every 5 minutes —
+both purely internal, moving `document_upload_sessions` rows to `expired`/reclaiming a stale
+`finalizing` lease, touching no external service. A Supabase Edge Function
+(`supabase/functions/cleanup-upload-sessions`) is the only place Storage's own HTTP API is reached:
+it deletes the underlying object for a session already in a terminal (`expired`/`cancelled`) state.
+As with `send-reminders`, the trigger secret is a function secret, never in the database. See
+`docs/DEPLOYMENT.md` for the deploy/secrets/trigger status of this function.
+
 ## Staff notifications
 
 Distinct from reminders: **event-driven rows, not emails.** A trigger on `documents` insert creates a `review_needed` notification when a Client (non-member) uploads; a trigger on `requirements` creates a `case_ready` notification on the *transition* to zero outstanding requirements, so one notification per Case-becoming-ready rather than one per approval. Staff are logged into the product, so a row they see on next load suffices; the Client is absent and must be reached by email. Sending Staff email is deferred to a later change.

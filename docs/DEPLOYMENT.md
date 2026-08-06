@@ -28,6 +28,16 @@ export PATH="/Users/paolabramlett/.nvm/versions/node/v24.16.0/bin:$PATH"
   - No JWT → `401` (platform gate; not publicly invocable).
   - Anon JWT, no secrets → `503 not configured` (fails closed; sends nothing).
   - It requires an internal `x-trigger-secret` header on top of the JWT once configured.
+- **Edge Function `cleanup-upload-sessions`** — deployed and hardened, same fail-closed shape as
+  `send-reminders`. Verified against the live URL:
+  - No JWT → `401` (platform gate; not publicly invocable).
+  - Anon JWT, no secrets → `503 not configured` (fails closed; deletes nothing).
+  - It requires an internal `x-trigger-secret` header on top of the JWT once configured.
+  - This is Step C of the upload-session lifecycle (design spec section 4): the two purely-internal
+    SQL steps (`app.reclaim_stale_finalizing_sessions()`, `app.expire_stale_pending_sessions()`) run
+    on their own `pg_cron` schedule and only move rows to `expired`/`cancelled`; this function is
+    the one place that actually deletes the underlying Storage object for a row already in one of
+    those terminal states. **Nothing invokes it in production yet** — see pending item 4a below.
 
 ## What is intentionally pending
 
@@ -44,6 +54,29 @@ Set in Dashboard → Edge Functions → send-reminders → Secrets, or `supabase
 | `REMINDER_TRIGGER_SECRET` | A strong random string; the cron presents it in `x-trigger-secret` |
 
 The function fails closed until all four are present.
+
+### 1a. Edge Function secrets — `cleanup-upload-sessions` (load before relying on Storage cleanup)
+Set in Dashboard → Edge Functions → cleanup-upload-sessions → Secrets, or `supabase secrets set`.
+`SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` are injected by the platform automatically.
+
+| Secret | What it is |
+|---|---|
+| `UPLOAD_CLEANUP_TRIGGER_SECRET` | A strong random string; the cron/scheduler presents it in `x-trigger-secret` |
+
+The function fails closed (`503 not configured`) until all three (including the two
+platform-injected ones) are present.
+
+**Deploy:**
+```bash
+npx supabase functions deploy cleanup-upload-sessions
+```
+
+**Without a trigger, this is a deployed no-op.** Every cancelled and every expired upload session's
+Storage object stays in the bucket forever — `cancel_upload_session`/`expire_stale_pending_sessions`
+only flip the row's status; deleting the actual object is this function's job alone (a Participant's
+own client-side best-effort `.remove()` call is guaranteed to delete zero rows under RLS — see
+`cancelUploadSession`'s own doc comment in `src/application/client-portal.ts`). See pending item 4a
+immediately below for how it must actually be scheduled.
 
 ### 2. Auth configuration (set in Dashboard, NOT via `config push`)
 `supabase config push` is **not safe here** — `config.toml` is tuned for local dev (localhost `site_url`, `email_sent = 3600` inflated for tests) and would clobber production redirect URLs and the mail rate limit. Set these three by hand instead (the security decisions from `design.md`):
@@ -78,6 +111,16 @@ Supabase's built-in email only sends to team addresses and is heavily rate-limit
 ### 4. pg_cron drain trigger
 The queue cron (`docuflow-queue-reminders`, every 15 min) is deployed and only *queues* due reminders. Triggering the Edge Function that *sends* them is a separate step, deliberately not baked into a cron command carrying a service-role key. Wire it (e.g., pg_cron + pg_net calling the function URL with the trigger secret) when secrets are loaded. Verify pg_cron is enabled in Dashboard → Database → Extensions.
 
+### 4a. `cleanup-upload-sessions` trigger (same gap as item 4, same fix)
+The two upload-session SQL cron jobs (`avanza-reclaim-stale-upload-sessions`,
+`avanza-expire-stale-upload-sessions`, both every 5 min) are deployed and only flip row status —
+they never touch Storage. Triggering the Edge Function that actually deletes the Storage object is
+a separate step, deliberately not baked into a cron command carrying a service-role key, exactly
+like item 4 above. Wire it the same way (pg_cron + pg_net calling the function URL with
+`UPLOAD_CLEANUP_TRIGGER_SECRET` in `x-trigger-secret`) when secrets are loaded. Until this is wired,
+every cancelled/expired upload session's Storage object accumulates in the `case-documents` bucket
+indefinitely, unreferenced by any `documents` row.
+
 ### 5. OTP end-to-end smoke test
 Blocked until SMTP + the code template are set. The flow is already tested locally end-to-end with real email delivery (Mailpit) in `invitation-flow.test.ts`. Do the hosted smoke test with a team email or a staging project — do **not** create test users/data on production.
 
@@ -90,8 +133,9 @@ npx supabase link --project-ref wfkommwpsjohrxiivhfa
 npx supabase migration list                # confirm remote state
 # future schema changes:
 npx supabase db push
-# redeploy the function after edits:
+# redeploy a function after edits:
 npx supabase functions deploy send-reminders
+npx supabase functions deploy cleanup-upload-sessions
 ```
 
 ## Local development (unchanged)
