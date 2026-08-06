@@ -1153,6 +1153,13 @@ export type Database = {
         Args: { cooldown_seconds: number; signup_email: string }
         Returns: boolean
       }
+      claim_upload_session_for_finalize: {
+        Args: { p_session_id: string }
+        Returns: {
+          already_completed: boolean
+          completed_document_id: string
+        }[]
+      }
       close_case: {
         Args: { p_case_id: string; p_closing_note?: string; p_outcome: string }
         Returns: {

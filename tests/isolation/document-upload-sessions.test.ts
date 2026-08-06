@@ -340,3 +340,218 @@ describe('create_upload_session', () => {
     expect(error?.message).toBe('content_type_not_allowed');
   });
 });
+
+/** Inserts a session row directly (service role), returning its id and reserved_document_id. */
+async function insertSession(
+  world: Awaited<ReturnType<typeof buildOrganizationWorld>>,
+  overrides: Partial<{
+    status: string;
+    claimedAt: string | null;
+    expiresAt: string;
+    completedDocumentId: string | null;
+  }> = {},
+) {
+  const reservedDocumentId = randomUUID();
+  // document_upload_sessions_completed_only_when_completed requires completed_document_id AND
+  // completed_at to be non-null iff status = 'completed' (and completed_document_id must equal
+  // reserved_document_id, per the other check constraint) — so a 'completed' fixture row defaults
+  // completed_document_id to the reserved id right here, at insert time, rather than leaving it
+  // null and trying to backfill it in a follow-up update (which the initial insert would never
+  // reach, since it would violate the constraint immediately).
+  const completedDocumentId =
+    overrides.completedDocumentId ?? (overrides.status === 'completed' ? reservedDocumentId : null);
+  const storagePath = `${world.organizationId}/cases/${world.caseId}/requirements/${world.requirementIds[0]}/${reservedDocumentId}`;
+
+  // completed_document_id carries a real FK to documents(id) (document_upload_sessions_completed_document_id_fkey),
+  // so any fixture row that sets it — 'completed' fixtures here — needs an actual documents row
+  // sharing the reserved id, exactly like the schema-suite's own transition test does above.
+  if (completedDocumentId) {
+    const { error: documentInsertError } = await adminClient().from('documents').insert({
+      id: completedDocumentId,
+      organization_id: world.organizationId,
+      case_id: world.caseId,
+      requirement_id: world.requirementIds[0]!,
+      storage_path: storagePath,
+      file_name: 'test.pdf',
+      content_type: 'application/pdf',
+      size_bytes: 1000,
+    });
+    if (documentInsertError) console.error('insertSession documents fixture error', documentInsertError);
+  }
+
+  const { data, error } = await adminClient()
+    .from('document_upload_sessions')
+    .insert({
+      organization_id: world.organizationId,
+      case_id: world.caseId,
+      requirement_id: world.requirementIds[0]!,
+      participant_id: world.participantId,
+      storage_path: storagePath,
+      original_file_name: 'test.pdf',
+      declared_content_type: 'application/pdf',
+      declared_size_bytes: 1000,
+      signed_url_expires_at: futureIso(120),
+      reserved_document_id: reservedDocumentId,
+      expires_at: overrides.expiresAt ?? futureIso(30),
+      status: overrides.status ?? 'pending',
+      claimed_at: overrides.claimedAt ?? null,
+      completed_document_id: completedDocumentId,
+      completed_at: completedDocumentId ? new Date().toISOString() : null,
+    })
+    .select('id, reserved_document_id')
+    .single();
+  if (error) console.error('insertSession error', error);
+  return { sessionId: data!.id as string, reservedDocumentId: data!.reserved_document_id as string };
+}
+
+describe('claim_upload_session_for_finalize', () => {
+  it('claims a pending session and marks it finalizing', async () => {
+    const world = await buildOrganizationWorld({
+      name: 'Notaría Claim Pending',
+      industry: 'notary',
+      clientEmail: `claim-pending-${randomUUID()}@example.test`,
+    });
+    const granted = await grantVerifiedAccess({ world, permission: 'upload' });
+    const { sessionId } = await insertSession(world);
+
+    const { data, error } = await granted.client.rpc('claim_upload_session_for_finalize', {
+      p_session_id: sessionId,
+    });
+
+    expect(error).toBeNull();
+    expect(data?.[0]).toMatchObject({ already_completed: false, completed_document_id: null });
+
+    const { data: after } = await adminClient()
+      .from('document_upload_sessions')
+      .select('status, claimed_at')
+      .eq('id', sessionId)
+      .single();
+    expect(after?.status).toBe('finalizing');
+    expect(after?.claimed_at).not.toBeNull();
+  });
+
+  it('short-circuits a completed session without any state change', async () => {
+    const world = await buildOrganizationWorld({
+      name: 'Notaría Claim Completed',
+      industry: 'notary',
+      clientEmail: `claim-completed-${randomUUID()}@example.test`,
+    });
+    const granted = await grantVerifiedAccess({ world, permission: 'upload' });
+    const { sessionId, reservedDocumentId } = await insertSession(world, {
+      status: 'completed',
+      completedDocumentId: null, // set below once we know the id
+    });
+    // completed_document_id must equal reserved_document_id per the schema check constraint.
+    await adminClient()
+      .from('document_upload_sessions')
+      .update({ completed_document_id: reservedDocumentId, completed_at: new Date().toISOString() })
+      .eq('id', sessionId);
+
+    const { data, error } = await granted.client.rpc('claim_upload_session_for_finalize', {
+      p_session_id: sessionId,
+    });
+
+    expect(error).toBeNull();
+    expect(data?.[0]).toMatchObject({ already_completed: true, completed_document_id: reservedDocumentId });
+  });
+
+  it('refuses a session currently finalizing within its lease', async () => {
+    const world = await buildOrganizationWorld({
+      name: 'Notaría Claim InProgress',
+      industry: 'notary',
+      clientEmail: `claim-inprogress-${randomUUID()}@example.test`,
+    });
+    const granted = await grantVerifiedAccess({ world, permission: 'upload' });
+    const { sessionId } = await insertSession(world, { status: 'finalizing', claimedAt: new Date().toISOString() });
+
+    const { error } = await granted.client.rpc('claim_upload_session_for_finalize', { p_session_id: sessionId });
+    expect(error?.message).toBe('upload_finalize_in_progress');
+  });
+
+  it('reclaims a session finalizing past its lease', async () => {
+    const world = await buildOrganizationWorld({
+      name: 'Notaría Claim Reclaim',
+      industry: 'notary',
+      clientEmail: `claim-reclaim-${randomUUID()}@example.test`,
+    });
+    const granted = await grantVerifiedAccess({ world, permission: 'upload' });
+    const staleClaimedAt = new Date(Date.now() - 6 * 60_000).toISOString(); // 6 min ago, past the 5-min lease
+    const { sessionId } = await insertSession(world, { status: 'finalizing', claimedAt: staleClaimedAt });
+
+    const { data, error } = await granted.client.rpc('claim_upload_session_for_finalize', {
+      p_session_id: sessionId,
+    });
+    expect(error).toBeNull();
+    expect(data?.[0]?.already_completed).toBe(false);
+
+    const { data: after } = await adminClient()
+      .from('document_upload_sessions')
+      .select('claimed_at')
+      .eq('id', sessionId)
+      .single();
+    expect(Date.parse(after!.claimed_at!)).toBeGreaterThan(Date.parse(staleClaimedAt));
+  });
+
+  it('refuses a cancelled session', async () => {
+    const world = await buildOrganizationWorld({
+      name: 'Notaría Claim Cancelled',
+      industry: 'notary',
+      clientEmail: `claim-cancelled-${randomUUID()}@example.test`,
+    });
+    const granted = await grantVerifiedAccess({ world, permission: 'upload' });
+    const { sessionId } = await insertSession(world, { status: 'cancelled' });
+
+    const { error } = await granted.client.rpc('claim_upload_session_for_finalize', { p_session_id: sessionId });
+    expect(error?.message).toBe('upload_session_cancelled');
+  });
+
+  it('refuses an expired session', async () => {
+    const world = await buildOrganizationWorld({
+      name: 'Notaría Claim Expired',
+      industry: 'notary',
+      clientEmail: `claim-expired-${randomUUID()}@example.test`,
+    });
+    const granted = await grantVerifiedAccess({ world, permission: 'upload' });
+    const { sessionId } = await insertSession(world, { status: 'expired' });
+
+    const { error } = await granted.client.rpc('claim_upload_session_for_finalize', { p_session_id: sessionId });
+    expect(error?.message).toBe('upload_session_expired');
+  });
+
+  it('refuses a pending session whose expires_at already passed, without persisting the transition itself', async () => {
+    const world = await buildOrganizationWorld({
+      name: 'Notaría Claim LazyExpire',
+      industry: 'notary',
+      clientEmail: `claim-lazyexpire-${randomUUID()}@example.test`,
+    });
+    const granted = await grantVerifiedAccess({ world, permission: 'upload' });
+    const { sessionId } = await insertSession(world, { expiresAt: new Date(Date.now() - 1000).toISOString() });
+
+    const { error } = await granted.client.rpc('claim_upload_session_for_finalize', { p_session_id: sessionId });
+    expect(error?.message).toBe('upload_session_expired');
+
+    // The RPC's own UPDATE-then-RAISE cannot commit the UPDATE (an uncaught exception rolls back
+    // the whole RPC transaction, the UPDATE included), so the row is deliberately left 'pending'
+    // here — persisting the pending -> expired transition is app.expire_stale_pending_sessions()'s
+    // job (a later task), not this RPC's. The Participant still gets the correct error immediately.
+    const { data: after } = await adminClient()
+      .from('document_upload_sessions')
+      .select('status')
+      .eq('id', sessionId)
+      .single();
+    expect(after?.status).toBe('pending');
+  });
+
+  it('a Client with no grant on this session cannot claim it — RLS hides the row entirely, so it is upload_session_not_found, not a separate not_authorized', async () => {
+    const world = await buildOrganizationWorld({
+      name: 'Notaría Claim TenantIsolation',
+      industry: 'notary',
+      clientEmail: `claim-tenant-${randomUUID()}@example.test`,
+    });
+    const { sessionId } = await insertSession(world);
+    const other = await createOrganizationWithOwner('Notaría Claim TenantOther', 'notary');
+
+    const { error } = await other.owner.client.rpc('claim_upload_session_for_finalize', { p_session_id: sessionId });
+    expect(error?.message).toBe('upload_session_not_found');
+  });
+});
