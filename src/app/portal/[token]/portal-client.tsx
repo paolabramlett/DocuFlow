@@ -16,7 +16,6 @@ import type { PortalRequirement } from "@/features/case-access/portal-queries";
 import {
   getClientDocumentUrlAction,
   requestAccessCodeAction,
-  uploadRequirementDocumentAction,
   verifyAccessCodeAction,
   getPortalStateAction,
 } from "../actions";
@@ -488,24 +487,28 @@ function RequirementCard({
 }) {
   const m = META[r.state];
   const fileRef = useRef<HTMLInputElement | null>(null);
-  const [busy, setBusy] = useState(false);
+  const [uploadPhase, setUploadPhase] = useState<"idle" | "uploading" | "finalizing">("idle");
+  const [uploadPercent, setUploadPercent] = useState(0);
+  const abortControllerRef = useRef<AbortController | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [docError, setDocError] = useState<string | null>(null);
+  const busy = uploadPhase !== "idle";
 
   async function onFile(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     e.target.value = "";
     if (!file) return;
-
-    setBusy(true);
     setUploadError(null);
-    const formData = new FormData();
-    formData.set("file", file);
-    const result = await uploadRequirementDocumentAction(token, r.id, formData);
-    setBusy(false);
+    // Task 8 fills in: prepareUploadAction -> uploadFileDirectly (this module) -> finalizeUploadAction,
+    // driving setUploadPhase/setUploadPercent as the upload progresses and calling onChanged() once
+    // finalizeUploadAction succeeds. This task only establishes uploadPhase/uploadPercent/
+    // abortControllerRef and their UI, so reference them here (unused otherwise) to keep this
+    // intentionally partial stub passing `noUnusedLocals` until Task 8 invokes them for real.
+    void [onChanged, setUploadPhase, setUploadPercent];
+  }
 
-    if (result.ok) onChanged();
-    else setUploadError(result.message);
+  function cancelUpload() {
+    abortControllerRef.current?.abort();
   }
 
   async function openDocument(download: boolean) {
@@ -558,6 +561,26 @@ function RequirementCard({
           >
             <IconRefresh className="size-4" /> {busy ? "Subiendo…" : "Subir de nuevo"}
           </button>
+          {uploadPhase !== "idle" && (
+            <div className="mt-2.5">
+              <div className="h-1.5 overflow-hidden rounded-full bg-app-bg">
+                <div
+                  className="h-full rounded-full bg-royal-500 transition-[width] duration-200 ease-out"
+                  style={{ width: `${uploadPhase === "finalizing" ? 100 : uploadPercent}%` }}
+                />
+              </div>
+              <div className="mt-1.5 flex items-center justify-between">
+                <span className="text-xs text-text-secondary">
+                  {uploadPhase === "finalizing" ? "Confirmando…" : `Subiendo… ${uploadPercent}%`}
+                </span>
+                {uploadPhase === "uploading" && (
+                  <button onClick={cancelUpload} className="text-xs font-medium text-error hover:underline">
+                    Cancelar
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
         </div>
       )}
 
@@ -570,6 +593,26 @@ function RequirementCard({
           >
             <IconUpload className="size-4" /> {busy ? "Subiendo…" : "Subir documento"}
           </button>
+          {uploadPhase !== "idle" && (
+            <div className="mt-2.5">
+              <div className="h-1.5 overflow-hidden rounded-full bg-app-bg">
+                <div
+                  className="h-full rounded-full bg-royal-500 transition-[width] duration-200 ease-out"
+                  style={{ width: `${uploadPhase === "finalizing" ? 100 : uploadPercent}%` }}
+                />
+              </div>
+              <div className="mt-1.5 flex items-center justify-between">
+                <span className="text-xs text-text-secondary">
+                  {uploadPhase === "finalizing" ? "Confirmando…" : `Subiendo… ${uploadPercent}%`}
+                </span>
+                {uploadPhase === "uploading" && (
+                  <button onClick={cancelUpload} className="text-xs font-medium text-error hover:underline">
+                    Cancelar
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
         </div>
       )}
 
