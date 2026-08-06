@@ -1222,6 +1222,14 @@ export type Database = {
           token: string
         }[]
       }
+      finalize_document_upload: {
+        Args: {
+          p_session_id: string
+          p_verified_content_type: string
+          p_verified_size_bytes: number
+        }
+        Returns: string
+      }
       list_actionable_requirement_ids: {
         Args: { p_participant_id: string }
         Returns: string[]

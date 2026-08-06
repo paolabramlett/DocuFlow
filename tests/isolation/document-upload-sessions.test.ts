@@ -588,3 +588,212 @@ describe('claim_upload_session_for_finalize', () => {
     expect(error?.message).toBe('upload_session_not_found');
   });
 });
+
+describe('finalize_document_upload', () => {
+  it('registers the document using the VERIFIED size/content-type, not the declared ones', async () => {
+    const world = await buildOrganizationWorld({
+      name: 'Notaría Finalize Verified',
+      industry: 'notary',
+      clientEmail: `finalize-verified-${randomUUID()}@example.test`,
+    });
+    const granted = await grantVerifiedAccess({ world, permission: 'upload' });
+    const { sessionId, reservedDocumentId } = await insertSession(world);
+    await granted.client.rpc('claim_upload_session_for_finalize', { p_session_id: sessionId });
+
+    const { data: documentId, error } = await granted.client.rpc('finalize_document_upload', {
+      p_session_id: sessionId,
+      p_verified_size_bytes: 4242, // deliberately different from insertSession's declared 1000
+      p_verified_content_type: 'image/png', // deliberately different from declared 'application/pdf'
+    });
+
+    expect(error).toBeNull();
+    expect(documentId).toBe(reservedDocumentId);
+
+    const { data: doc } = await adminClient()
+      .from('documents')
+      .select('size_bytes, content_type')
+      .eq('id', reservedDocumentId)
+      .single();
+    expect(doc).toMatchObject({ size_bytes: 4242, content_type: 'image/png' });
+
+    const { data: session } = await adminClient()
+      .from('document_upload_sessions')
+      .select('status, completed_document_id, completed_at')
+      .eq('id', sessionId)
+      .single();
+    expect(session?.status).toBe('completed');
+    expect(session?.completed_document_id).toBe(reservedDocumentId);
+    expect(session?.completed_at).not.toBeNull();
+  });
+
+  it('refuses a session that is not currently finalizing', async () => {
+    const world = await buildOrganizationWorld({
+      name: 'Notaría Finalize NotFinalizing',
+      industry: 'notary',
+      clientEmail: `finalize-notfinalizing-${randomUUID()}@example.test`,
+    });
+    const granted = await grantVerifiedAccess({ world, permission: 'upload' });
+    const { sessionId } = await insertSession(world); // still pending, never claimed
+
+    const { error } = await granted.client.rpc('finalize_document_upload', {
+      p_session_id: sessionId,
+      p_verified_size_bytes: 1000,
+      p_verified_content_type: 'application/pdf',
+    });
+    expect(error?.message).toBe('upload_session_not_finalizing');
+  });
+
+  it('refuses when the requirement was already satisfied during the upload', async () => {
+    const world = await buildOrganizationWorld({
+      name: 'Notaría Finalize AlreadySatisfied',
+      industry: 'notary',
+      clientEmail: `finalize-satisfied-${randomUUID()}@example.test`,
+    });
+    const granted = await grantVerifiedAccess({ world, permission: 'upload' });
+    const { sessionId } = await insertSession(world);
+    await granted.client.rpc('claim_upload_session_for_finalize', { p_session_id: sessionId });
+    await adminClient().from('requirements').update({ status: 'satisfied' }).eq('id', world.requirementIds[0]!);
+
+    const { error } = await granted.client.rpc('finalize_document_upload', {
+      p_session_id: sessionId,
+      p_verified_size_bytes: 1000,
+      p_verified_content_type: 'application/pdf',
+    });
+    expect(error?.message).toBe('requirement_already_satisfied');
+  });
+
+  it('refuses when the Case closed during the upload', async () => {
+    const world = await buildOrganizationWorld({
+      name: 'Notaría Finalize CaseClosed',
+      industry: 'notary',
+      clientEmail: `finalize-caseclosed-${randomUUID()}@example.test`,
+    });
+    const granted = await grantVerifiedAccess({ world, permission: 'upload' });
+    const { sessionId } = await insertSession(world);
+    await granted.client.rpc('claim_upload_session_for_finalize', { p_session_id: sessionId });
+    // 'cancelled' (not 'completed'): close_case's 'completed' path additionally requires every
+    // visible Requirement to already be satisfied, which would trip finalize_document_upload's
+    // OWN earlier requirement_already_satisfied check before ever reaching case_not_open — this
+    // test targets the case-state guard specifically, not the requirement one (covered above).
+    await world.staff.client.rpc('close_case', {
+      p_case_id: world.caseId,
+      p_outcome: 'cancelled',
+      p_closing_note: 'closed mid-upload for finalize_document_upload case_not_open coverage',
+    });
+
+    // close_case's own trigger (app.downgrade_grants_on_closure, established well before this
+    // task) unconditionally downgrades every active grant on the Case from 'upload' to 'view' the
+    // moment it closes. Left alone, that downgrade would make this session invisible to
+    // finalize_document_upload's own 'upload'-scoped authorization query first, producing
+    // upload_session_not_found before the RPC's explicit case_not_open branch is ever reached —
+    // collapsing this test into a duplicate of the tenant-isolation test instead of exercising
+    // what it's named for. Restoring 'upload' here isolates the one guard this test targets: it
+    // simulates a still-active upload grant that outlives the Case's own open/closed state,
+    // exactly the design spec's "what could have changed during the upload's own wall-clock
+    // duration" scenario for case_not_open specifically (as distinct from grant_no_longer_active,
+    // covered by its own separate concern).
+    await adminClient()
+      .from('case_access_grants')
+      .update({ permission: 'upload', expires_at: futureIso(30) })
+      .eq('participant_id', world.participantId);
+
+    const { error } = await granted.client.rpc('finalize_document_upload', {
+      p_session_id: sessionId,
+      p_verified_size_bytes: 1000,
+      p_verified_content_type: 'application/pdf',
+    });
+    expect(error?.message).toBe('case_not_open');
+  });
+
+  it('is idempotent: calling it twice never creates a second documents row', async () => {
+    const world = await buildOrganizationWorld({
+      name: 'Notaría Finalize Idempotent',
+      industry: 'notary',
+      clientEmail: `finalize-idempotent-${randomUUID()}@example.test`,
+    });
+    const granted = await grantVerifiedAccess({ world, permission: 'upload' });
+    const { sessionId, reservedDocumentId } = await insertSession(world);
+    await granted.client.rpc('claim_upload_session_for_finalize', { p_session_id: sessionId });
+    await granted.client.rpc('finalize_document_upload', {
+      p_session_id: sessionId,
+      p_verified_size_bytes: 1000,
+      p_verified_content_type: 'application/pdf',
+    });
+
+    const { error: secondError } = await granted.client.rpc('finalize_document_upload', {
+      p_session_id: sessionId,
+      p_verified_size_bytes: 1000,
+      p_verified_content_type: 'application/pdf',
+    });
+    expect(secondError?.message).toBe('upload_session_not_finalizing'); // already 'completed'
+
+    const { count } = await adminClient()
+      .from('documents')
+      .select('*', { count: 'exact', head: true })
+      .eq('id', reservedDocumentId);
+    expect(count).toBe(1);
+  });
+
+  it('THE STALE-CLAIM RACE: a late finalize call on a session reclaimed and completed by someone else is rejected, never a duplicate row', async () => {
+    const world = await buildOrganizationWorld({
+      name: 'Notaría Finalize StaleClaimRace',
+      industry: 'notary',
+      clientEmail: `finalize-stalerace-${randomUUID()}@example.test`,
+    });
+    const granted = await grantVerifiedAccess({ world, permission: 'upload' });
+    const { sessionId, reservedDocumentId } = await insertSession(world);
+
+    // Caller A claims first.
+    await granted.client.rpc('claim_upload_session_for_finalize', { p_session_id: sessionId });
+
+    // Simulate the cleanup job reclaiming A's stale lease (design spec's own worked trace) by
+    // directly forcing the row back to 'pending' — this stands in for
+    // reclaim_stale_finalizing_sessions() (Task 5), which isn't built yet at this point in the
+    // plan; the RPC's own guard is what's under test here, not the reclaim job itself.
+    await adminClient()
+      .from('document_upload_sessions')
+      .update({ status: 'pending', claimed_at: null })
+      .eq('id', sessionId);
+
+    // Caller B claims and completes the (reclaimed) session.
+    await granted.client.rpc('claim_upload_session_for_finalize', { p_session_id: sessionId });
+    await granted.client.rpc('finalize_document_upload', {
+      p_session_id: sessionId,
+      p_verified_size_bytes: 2000,
+      p_verified_content_type: 'application/pdf',
+    });
+
+    // Caller A's own (stale) finalize call now finally executes.
+    const { error: staleError } = await granted.client.rpc('finalize_document_upload', {
+      p_session_id: sessionId,
+      p_verified_size_bytes: 1000, // A's own, different, verified values
+      p_verified_content_type: 'image/png',
+    });
+    expect(staleError?.message).toBe('upload_session_not_finalizing');
+
+    // Exactly one documents row exists, with B's values, not A's.
+    const { data: doc, count } = await adminClient()
+      .from('documents')
+      .select('size_bytes, content_type', { count: 'exact' })
+      .eq('id', reservedDocumentId);
+    expect(count).toBe(1);
+    expect(doc?.[0]).toMatchObject({ size_bytes: 2000, content_type: 'application/pdf' });
+  });
+
+  it('a Client with no grant on this session cannot finalize it — same RLS-collapses-to-not_found reasoning as claim', async () => {
+    const world = await buildOrganizationWorld({
+      name: 'Notaría Finalize TenantIsolation',
+      industry: 'notary',
+      clientEmail: `finalize-tenant-${randomUUID()}@example.test`,
+    });
+    const { sessionId } = await insertSession(world);
+    const other = await createOrganizationWithOwner('Notaría Finalize TenantOther', 'notary');
+
+    const { error } = await other.owner.client.rpc('finalize_document_upload', {
+      p_session_id: sessionId,
+      p_verified_size_bytes: 1000,
+      p_verified_content_type: 'application/pdf',
+    });
+    expect(error?.message).toBe('upload_session_not_found');
+  });
+});
