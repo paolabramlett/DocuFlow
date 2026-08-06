@@ -884,3 +884,91 @@ describe('finalize_document_upload', () => {
     expect(count).toBe(1);
   });
 });
+
+describe('cancel_upload_session', () => {
+  it('cancels a pending session', async () => {
+    const world = await buildOrganizationWorld({
+      name: 'Notaría Cancel Pending',
+      industry: 'notary',
+      clientEmail: `cancel-pending-${randomUUID()}@example.test`,
+    });
+    const granted = await grantVerifiedAccess({ world, permission: 'upload' });
+    const { sessionId } = await insertSession(world);
+
+    const { error } = await granted.client.rpc('cancel_upload_session', { p_session_id: sessionId });
+    expect(error).toBeNull();
+
+    const { data: after } = await adminClient()
+      .from('document_upload_sessions')
+      .select('status')
+      .eq('id', sessionId)
+      .single();
+    expect(after?.status).toBe('cancelled');
+  });
+
+  it('refuses to cancel a session mid-finalize', async () => {
+    const world = await buildOrganizationWorld({
+      name: 'Notaría Cancel MidFinalize',
+      industry: 'notary',
+      clientEmail: `cancel-midfinalize-${randomUUID()}@example.test`,
+    });
+    const granted = await grantVerifiedAccess({ world, permission: 'upload' });
+    const { sessionId } = await insertSession(world);
+    await granted.client.rpc('claim_upload_session_for_finalize', { p_session_id: sessionId });
+
+    const { error } = await granted.client.rpc('cancel_upload_session', { p_session_id: sessionId });
+    expect(error?.message).toBe('upload_finalize_in_progress');
+
+    const { data: after } = await adminClient()
+      .from('document_upload_sessions')
+      .select('status')
+      .eq('id', sessionId)
+      .single();
+    expect(after?.status).toBe('finalizing'); // untouched
+  });
+
+  it('refuses to cancel an already-completed session', async () => {
+    const world = await buildOrganizationWorld({
+      name: 'Notaría Cancel Completed',
+      industry: 'notary',
+      clientEmail: `cancel-completed-${randomUUID()}@example.test`,
+    });
+    const granted = await grantVerifiedAccess({ world, permission: 'upload' });
+    const { sessionId } = await insertSession(world);
+    await granted.client.rpc('claim_upload_session_for_finalize', { p_session_id: sessionId });
+    await granted.client.rpc('finalize_document_upload', {
+      p_session_id: sessionId,
+      p_verified_size_bytes: 1000,
+      p_verified_content_type: 'application/pdf',
+    });
+
+    const { error } = await granted.client.rpc('cancel_upload_session', { p_session_id: sessionId });
+    expect(error?.message).toBe('upload_already_completed');
+  });
+
+  it('is idempotent from a terminal state', async () => {
+    const world = await buildOrganizationWorld({
+      name: 'Notaría Cancel Idempotent',
+      industry: 'notary',
+      clientEmail: `cancel-idempotent-${randomUUID()}@example.test`,
+    });
+    const granted = await grantVerifiedAccess({ world, permission: 'upload' });
+    const { sessionId } = await insertSession(world, { status: 'cancelled' });
+
+    const { error } = await granted.client.rpc('cancel_upload_session', { p_session_id: sessionId });
+    expect(error).toBeNull(); // no-op, not an error
+  });
+
+  it('a Client with no grant on this session cannot cancel it — same RLS-collapses-to-not_found reasoning as claim', async () => {
+    const world = await buildOrganizationWorld({
+      name: 'Notaría Cancel TenantIsolation',
+      industry: 'notary',
+      clientEmail: `cancel-tenant-${randomUUID()}@example.test`,
+    });
+    const { sessionId } = await insertSession(world);
+    const other = await createOrganizationWithOwner('Notaría Cancel TenantOther', 'notary');
+
+    const { error } = await other.owner.client.rpc('cancel_upload_session', { p_session_id: sessionId });
+    expect(error?.message).toBe('upload_session_not_found');
+  });
+});

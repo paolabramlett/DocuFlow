@@ -1149,6 +1149,10 @@ export type Database = {
         Args: { p_requirement_id: string; p_stage_id: string }
         Returns: undefined
       }
+      cancel_upload_session: {
+        Args: { p_session_id: string }
+        Returns: undefined
+      }
       claim_signup_attempt: {
         Args: { cooldown_seconds: number; signup_email: string }
         Returns: boolean
