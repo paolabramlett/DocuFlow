@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { buildOrganizationWorld, grantVerifiedAccess, addParticipant } from '../helpers/fixtures';
 import { decideReview, registerDocument } from '@/features/documents/documents';
 import { getPortalCase } from '@/features/case-access/portal-queries';
-import { getClientDocumentUrl, uploadRequirementDocument } from '@/application/client-portal';
+import { getClientDocumentUrl } from '@/application/client-portal';
 import { CASE_DOCUMENTS_BUCKET } from '@/lib/storage/paths';
 
 describe('client document access — post-approval read-only view/download', () => {
@@ -117,37 +117,5 @@ describe('client document access — post-approval read-only view/download', () 
     await expect(
       getClientDocumentUrl(grantedA.client, { token: tokenA, documentId: uploadedB.documentId }),
     ).rejects.toMatchObject({ reason: 'not_found' });
-  });
-
-  it('refuses to re-upload for an already-approved requirement', async () => {
-    const world = await buildOrganizationWorld({
-      name: 'Notaría Client Doc Locked',
-      industry: 'notary',
-      clientEmail: `client-doc-locked-${randomUUID()}@example.test`,
-    });
-    const token = `test-token-${randomUUID()}`;
-    const granted = await grantVerifiedAccess({ world, permission: 'upload', token });
-    const requirementId = world.requirementIds[0]!;
-    const uploaded = await registerDocument(
-      granted.client,
-      { organizationId: world.organizationId, caseId: world.caseId, requirementId, fileName: 'ine.pdf', contentType: 'application/pdf', sizeBytes: 100 },
-      { kind: 'client', authUserId: granted.authUserId, grantId: granted.grantId },
-    );
-    await decideReview(world.staff.client, { documentId: uploaded.documentId, decision: 'approved' }, world.staff.userId);
-
-    await expect(
-      uploadRequirementDocument(
-        granted.client,
-        {
-          token,
-          requirementId,
-          fileName: 'ine-again.pdf',
-          contentType: 'application/pdf',
-          sizeBytes: 100,
-          file: new Blob(['test'], { type: 'application/pdf' }),
-        },
-        granted.authUserId,
-      ),
-    ).rejects.toMatchObject({ reason: 'conflict' });
   });
 });

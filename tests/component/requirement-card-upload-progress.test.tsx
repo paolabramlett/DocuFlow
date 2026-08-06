@@ -5,7 +5,6 @@ vi.mock('next/navigation', () => ({
   useRouter: () => ({ refresh: vi.fn(), replace: vi.fn(), push: vi.fn() }),
 }));
 vi.mock('@/app/portal/actions', () => ({
-  uploadRequirementDocumentAction: vi.fn(),
   getClientDocumentUrlAction: vi.fn(),
   prepareUploadAction: vi.fn(),
   finalizeUploadAction: vi.fn(),

@@ -3,7 +3,6 @@ import { z } from 'zod';
 import type { Database } from '@/types/database';
 import { ValidationError, parseInput } from '@/lib/validation/parse';
 import { UseCaseError, type FailureReason } from './errors';
-import { logDomainEvent } from './events';
 import {
   InvitationError,
   lookupInvitation,
@@ -13,10 +12,9 @@ import {
   type InvitationFailure,
 } from '@/features/case-access/invitations';
 import { getPortalCase, type PortalRequirement } from '@/features/case-access/portal-queries';
-import { createDocumentDownloadUrl, registerDocument } from '@/features/documents/documents';
+import { createDocumentDownloadUrl } from '@/features/documents/documents';
 import { ALLOWED_CONTENT_TYPES, MAX_DOCUMENT_BYTES } from '@/features/documents/schemas';
-import { CASE_DOCUMENTS_BUCKET, documentObjectPath } from '@/lib/storage/paths';
-import { randomUUID } from 'node:crypto';
+import { CASE_DOCUMENTS_BUCKET } from '@/lib/storage/paths';
 
 type DbClient = SupabaseClient<Database>;
 
@@ -201,135 +199,6 @@ export async function getPortalState(client: DbClient, token: string): Promise<P
     correctionsPending,
     workflowComplete,
   };
-}
-
-// ------------------------------------------------------------------------------------------------
-// 5 + 7 · Upload (first time or replacing a rejected Requirement)
-// ------------------------------------------------------------------------------------------------
-
-const uploadInputSchema = z.object({
-  token: z.string().min(1),
-  requirementId: z.string().uuid(),
-  fileName: z.string().trim().min(1).max(500),
-  contentType: z.enum(ALLOWED_CONTENT_TYPES),
-  sizeBytes: z.number().int().positive().max(MAX_DOCUMENT_BYTES),
-});
-
-export interface UploadRequirementDocumentInput {
-  readonly token: string;
-  readonly requirementId: string;
-  readonly fileName: string;
-  readonly contentType: string;
-  readonly sizeBytes: number;
-  /** The raw bytes. A Blob/File works directly with Supabase Storage's upload API. */
-  readonly file: Blob;
-}
-
-/**
- * Uploads a document for one of the caller's own Requirements, through a signed upload URL.
- *
- * The signed URL is minted with the caller's own session, so the storage INSERT policy
- * (`granted_participant_ids('upload')` on the path's Requirement segment) decides whether this
- * write may exist at all — before a single byte moves. This is the same authorization boundary
- * as every other write in the system; a signed URL does not bypass it, it is issued by it.
- *
- * Works identically for a first upload and for replacing a rejected one: both are just "a new
- * Document for this Requirement" — the prior Document and its rejection stay in place, providing
- * the history a Staff member can review later.
- */
-export async function uploadRequirementDocument(
-  client: DbClient,
-  input: UploadRequirementDocumentInput,
-  actorAuthUserId: string,
-): Promise<void> {
-  let parsed;
-  try {
-    parsed = parseInput(uploadInputSchema, input);
-  } catch (error) {
-    if (error instanceof ValidationError) {
-      throw new UseCaseError('validation', 'Revisa el archivo: solo PDF o imágenes de hasta 25 MB.', error.issues);
-    }
-    throw error;
-  }
-
-  const grant = await resolveMyGrant(client, parsed.token);
-  if (!grant || !grant.isActive) {
-    throw new UseCaseError('forbidden', 'Tu acceso a este expediente ya no está disponible.');
-  }
-  if (grant.permission !== 'upload') {
-    throw new UseCaseError('forbidden', 'No puedes subir documentos en este momento.');
-  }
-
-  const { data: requirement, error: reqError } = await client
-    .from('requirements')
-    .select('organization_id, case_id, participant_id, status')
-    .eq('id', parsed.requirementId)
-    .maybeSingle();
-
-  if (reqError) throw new UseCaseError('unexpected', 'No pudimos leer ese requisito.');
-  if (!requirement || requirement.participant_id !== grant.participantId) {
-    throw new UseCaseError('not_found', 'Ese requisito ya no está disponible para ti.');
-  }
-  // An approved Requirement is read-only from the Portal — re-uploading would silently reopen a
-  // decision the client never sees change (deriveState in portal-queries.ts trusts `status` first,
-  // so the checklist would keep showing "Aprobado" while a brand-new, unreviewed Document sat
-  // underneath it). Reversing an approval is Staff's call, not a side effect of a client's upload.
-  if (requirement.status === 'satisfied') {
-    throw new UseCaseError('conflict', 'Este requisito ya fue aprobado y no se puede reemplazar.');
-  }
-
-  const documentId = randomUUID();
-  const path = documentObjectPath({
-    organizationId: requirement.organization_id,
-    caseId: requirement.case_id,
-    requirementId: parsed.requirementId,
-    documentId,
-  });
-
-  const { data: signed, error: signError } = await client.storage
-    .from(CASE_DOCUMENTS_BUCKET)
-    .createSignedUploadUrl(path);
-
-  if (signError || !signed) {
-    throw new UseCaseError('forbidden', 'No pudimos preparar la subida. Intenta de nuevo.');
-  }
-
-  const { error: uploadError } = await client.storage
-    .from(CASE_DOCUMENTS_BUCKET)
-    .uploadToSignedUrl(path, signed.token, input.file, { contentType: parsed.contentType });
-
-  if (uploadError) {
-    throw new UseCaseError('delivery_failed', 'No pudimos subir el archivo. Vuelve a intentarlo.');
-  }
-
-  try {
-    await registerDocument(
-      client,
-      {
-        organizationId: requirement.organization_id,
-        caseId: requirement.case_id,
-        requirementId: parsed.requirementId,
-        fileName: parsed.fileName,
-        contentType: parsed.contentType,
-        sizeBytes: parsed.sizeBytes,
-        documentId,
-      },
-      { kind: 'client', authUserId: actorAuthUserId, grantId: grant.grantId },
-    );
-  } catch (cause) {
-    console.error('Document uploaded to storage but registerDocument failed:', cause);
-    throw new UseCaseError('unexpected', 'El archivo se subió, pero no pudimos registrarlo. Contacta a la notaría.');
-  }
-
-  await logDomainEvent(client, {
-    organizationId: requirement.organization_id,
-    caseId: requirement.case_id,
-    action: 'document.uploaded',
-    targetType: 'requirement',
-    targetId: parsed.requirementId,
-    actor: { kind: 'client', authUserId: actorAuthUserId, grantId: grant.grantId },
-    metadata: { replaced: true },
-  });
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -588,8 +457,8 @@ const documentUrlSchema = z.object({
  * underlying Requirement is still pending review or already approved (design.md: approved
  * Documents stay visible, they just become read-only).
  *
- * Ownership is checked explicitly, the same defense-in-depth style as uploadRequirementDocument's
- * own participant check: RLS on `documents`/`storage.objects` (granted_participant_ids) would
+ * Ownership is checked explicitly, the same defense-in-depth style as finalizeUpload's own
+ * participant check: RLS on `documents`/`storage.objects` (granted_participant_ids) would
  * refuse a cross-participant id on its own, but this call fails with a clear, dedicated message
  * rather than a bare storage 404 if the id belongs to someone else's Requirement.
  */

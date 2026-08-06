@@ -17,7 +17,6 @@ import {
   getPortalState,
   prepareUpload,
   requestAccessCode,
-  uploadRequirementDocument,
   verifyAccessCode,
   type PortalState,
   type PrepareUploadResult,
@@ -50,45 +49,6 @@ export async function getPortalStateAction(token: string): Promise<ActionResult<
   try {
     const supabase = await createClient();
     return ok(await getPortalState(supabase, token));
-  } catch (error) {
-    return fail(error);
-  }
-}
-
-export async function uploadRequirementDocumentAction(
-  token: string,
-  requirementId: string,
-  formData: FormData,
-): Promise<ActionResult<null>> {
-  try {
-    const supabase = await createClient();
-
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
-    if (!user) {
-      return { ok: false, reason: "unauthenticated", message: "Tu sesión expiró. Ingresa tu código de nuevo." };
-    }
-
-    const file = formData.get("file");
-    if (!(file instanceof File)) {
-      return { ok: false, reason: "validation", message: "Selecciona un archivo para subir." };
-    }
-
-    await uploadRequirementDocument(
-      supabase,
-      {
-        token,
-        requirementId,
-        fileName: file.name,
-        contentType: file.type,
-        sizeBytes: file.size,
-        file,
-      },
-      user.id,
-    );
-
-    return ok(null);
   } catch (error) {
     return fail(error);
   }
