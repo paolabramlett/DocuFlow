@@ -22,22 +22,25 @@ export PATH="/Users/paolabramlett/.nvm/versions/node/v24.16.0/bin:$PATH"
 
 ## What is deployed and verified
 
-- **Schema** — all 22 migrations applied (`supabase migration list` shows 22/22 remote). 15 tables, all empty.
+- **Schema** — all 49 migrations applied (`supabase migration list` shows 49/49 remote). 15 tables, all empty.
 - **Row Level Security** — verified against the hosted REST API: every table returns `[]` to an anonymous (anon-key) client, and `create_organization` without auth returns `403 authentication required`. Same isolation the 208 local tests validate.
 - **Edge Function `send-reminders`** — deployed and hardened. Verified against the live URL:
   - No JWT → `401` (platform gate; not publicly invocable).
   - Anon JWT, no secrets → `503 not configured` (fails closed; sends nothing).
   - It requires an internal `x-trigger-secret` header on top of the JWT once configured.
-- **Edge Function `cleanup-upload-sessions`** — deployed and hardened, same fail-closed shape as
-  `send-reminders`. Verified against the live URL:
-  - No JWT → `401` (platform gate; not publicly invocable).
-  - Anon JWT, no secrets → `503 not configured` (fails closed; deletes nothing).
-  - It requires an internal `x-trigger-secret` header on top of the JWT once configured.
-  - This is Step C of the upload-session lifecycle (design spec section 4): the two purely-internal
-    SQL steps (`app.reclaim_stale_finalizing_sessions()`, `app.expire_stale_pending_sessions()`) run
-    on their own `pg_cron` schedule and only move rows to `expired`/`cancelled`; this function is
-    the one place that actually deletes the underlying Storage object for a row already in one of
-    those terminal states. **Nothing invokes it in production yet** — see pending item 4a below.
+
+**Not yet deployed to production: Edge Function `cleanup-upload-sessions`.** It is implemented,
+hardened the same fail-closed way as `send-reminders`, and verified locally only — `supabase
+functions serve` against `127.0.0.1:54421`, same shape as the checks above (no JWT → `401`; anon JWT,
+no secrets → `503 not configured`; requires an internal `x-trigger-secret` header on top of the JWT
+once configured). It has never been run through an actual `supabase functions deploy
+cleanup-upload-sessions`, so none of that has been confirmed against the live URL. This is Step C of
+the upload-session lifecycle (design spec section 4): the two purely-internal SQL steps
+(`app.reclaim_stale_finalizing_sessions()`, `app.expire_stale_pending_sessions()`) run on their own
+`pg_cron` schedule and only move rows to `expired`/`cancelled`; this function is the one place that
+actually deletes the underlying Storage object for a row already in one of those terminal states.
+**It still needs a real deploy plus a production trigger before it does anything in production** —
+see pending items 1a and 4a below.
 
 ## What is intentionally pending
 
