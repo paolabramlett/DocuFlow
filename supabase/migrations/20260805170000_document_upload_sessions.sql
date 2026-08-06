@@ -85,7 +85,7 @@ comment on table public.document_upload_sessions is
   'Tracks a Portal document upload attempt through prepare -> direct browser upload -> finalize.
    State machine: pending -> finalizing -> completed, or pending -> cancelled, or
    pending/finalizing -> expired. See design spec section 4 for the full claim/finalize race
-   analysis and section 9 for why terminal rows are retained (not deleted) for 7-30 days. Every
+   analysis and section 3 for why terminal rows are retained (not deleted) for 7-30 days. Every
    write to this table — including creation — is RPC-mediated (create_upload_session,
    claim_upload_session_for_finalize, finalize_document_upload, cancel_upload_session); no client
    role has an insert/update/delete RLS policy on the table itself.';

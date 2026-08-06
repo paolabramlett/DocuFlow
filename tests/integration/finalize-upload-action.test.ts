@@ -27,10 +27,11 @@ describe('finalizeUpload', () => {
       industry: 'notary',
       clientEmail: `finalize-action-happy-${randomUUID()}@example.test`,
     });
-    const granted = await grantVerifiedAccess({ world, permission: 'upload', token: 'finalize-happy-token' });
+    const token = `finalize-happy-${randomUUID()}`;
+    const granted = await grantVerifiedAccess({ world, permission: 'upload', token });
 
     const prepared = await prepareUpload(granted.client, {
-      token: 'finalize-happy-token',
+      token,
       requirementId: world.requirementIds[0]!,
       fileName: 'ine.pdf',
       contentType: 'application/pdf',
@@ -64,9 +65,10 @@ describe('finalizeUpload', () => {
       industry: 'notary',
       clientEmail: `finalize-action-retry-${randomUUID()}@example.test`,
     });
-    const granted = await grantVerifiedAccess({ world, permission: 'upload', token: 'finalize-retry-token' });
+    const token = `finalize-retry-${randomUUID()}`;
+    const granted = await grantVerifiedAccess({ world, permission: 'upload', token });
     const prepared = await prepareUpload(granted.client, {
-      token: 'finalize-retry-token',
+      token,
       requirementId: world.requirementIds[0]!,
       fileName: 'ine.pdf',
       contentType: 'application/pdf',
@@ -92,9 +94,10 @@ describe('finalizeUpload', () => {
       industry: 'notary',
       clientEmail: `upsert-false-${randomUUID()}@example.test`,
     });
-    const granted = await grantVerifiedAccess({ world, permission: 'upload', token: 'upsert-false-token' });
+    const token = `upsert-false-${randomUUID()}`;
+    const granted = await grantVerifiedAccess({ world, permission: 'upload', token });
     const prepared = await prepareUpload(granted.client, {
-      token: 'upsert-false-token',
+      token,
       requirementId: world.requirementIds[0]!,
       fileName: 'ine.pdf',
       contentType: 'application/pdf',
@@ -139,6 +142,56 @@ describe('finalizeUpload', () => {
     expect(infoAfterB?.size).toBe(7);
   });
 
+  it('rejects finalize when the uploaded object\'s real Content-Type does not match what was declared at prepare time (design spec section 4/6 metadata-consistency check)', async () => {
+    const world = await buildOrganizationWorld({
+      name: 'Notaría Finalize ContentTypeMismatch',
+      industry: 'notary',
+      clientEmail: `finalize-mismatch-${randomUUID()}@example.test`,
+    });
+    const token = `finalize-mismatch-${randomUUID()}`;
+    const granted = await grantVerifiedAccess({ world, permission: 'upload', token });
+
+    // Declares application/pdf at prepare time...
+    const prepared = await prepareUpload(granted.client, {
+      token,
+      requirementId: world.requirementIds[0]!,
+      fileName: 'ine.pdf',
+      contentType: 'application/pdf',
+      sizeBytes: 8,
+    });
+
+    // ...but the real object PUT to Storage is actually image/png.
+    const put = await fetch(signedPutUrl(prepared.signedUrl, prepared.token), {
+      method: 'PUT',
+      body: (() => {
+        const fd = new FormData();
+        fd.append('cacheControl', '3600');
+        fd.append('', new Blob(['PNGBYTES'], { type: 'image/png' }));
+        return fd;
+      })(),
+    });
+    expect(put.ok).toBe(true);
+
+    await expect(finalizeUpload(granted.client, prepared.sessionId)).rejects.toMatchObject({ reason: 'validation' });
+
+    const { data: session } = await adminClient()
+      .from('document_upload_sessions')
+      .select('status, reserved_document_id')
+      .eq('id', prepared.sessionId)
+      .single();
+    // The RPC is never reached (finalizeUpload's own TS-layer check rejects first), so the
+    // session stays wherever claim_upload_session_for_finalize left it — 'finalizing' — and no
+    // documents row is ever written for the reserved id.
+    expect(session?.status).toBe('finalizing');
+
+    const { data: doc } = await adminClient()
+      .from('documents')
+      .select('id')
+      .eq('id', session!.reserved_document_id)
+      .maybeSingle();
+    expect(doc).toBeNull();
+  });
+
   // NOT a "the object is gone" assertion — confirmed empirically (while writing client-portal.ts's
   // cancelUploadSession) that it can't be: case_documents_delete_by_member
   // (supabase/migrations/20260722194115_storage_buckets.sql) grants delete on storage.objects to
@@ -156,9 +209,10 @@ describe('finalizeUpload', () => {
       industry: 'notary',
       clientEmail: `cancel-action-deletes-${randomUUID()}@example.test`,
     });
-    const granted = await grantVerifiedAccess({ world, permission: 'upload', token: 'cancel-deletes-token' });
+    const token = `cancel-deletes-${randomUUID()}`;
+    const granted = await grantVerifiedAccess({ world, permission: 'upload', token });
     const prepared = await prepareUpload(granted.client, {
-      token: 'cancel-deletes-token',
+      token,
       requirementId: world.requirementIds[0]!,
       fileName: 'ine.pdf',
       contentType: 'application/pdf',

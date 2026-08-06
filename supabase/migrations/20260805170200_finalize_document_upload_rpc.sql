@@ -40,6 +40,15 @@ begin
 
   select * into v_session from public.document_upload_sessions where id = p_session_id for update;
 
+  -- Defensive: the row was visible to the plain SELECT above, but if it were somehow deleted
+  -- between that SELECT and this FOR UPDATE, v_session would be entirely NULL and every
+  -- subsequent NULL-comparison branch below would silently evaluate false, falling through to a
+  -- raw not-null-violation on the documents insert instead of erroring cleanly. Matches the guard
+  -- already established in claim_upload_session_for_finalize and cancel_upload_session.
+  if not found then
+    raise exception using errcode = 'P0001', message = 'upload_session_not_found';
+  end if;
+
   -- Live status check, not a trust-the-caller check: this is what makes a stale finalize attempt
   -- (reclaimed and re-finalized by someone else while this call was mid-flight) safe without a
   -- lease token. See design spec section 4's worked trace.
@@ -64,14 +73,25 @@ begin
 
   -- Defense-in-depth, mirroring create_upload_session's own exact checks (same literal values):
   -- this RPC is directly callable by `authenticated`, so p_verified_size_bytes/p_verified_content_type
-  -- must be validated here too, not trusted from the caller. Without this, an out-of-range value
-  -- would instead hit documents' own check constraints and escape as a raw Postgres 23514 error
-  -- rather than this codebase's stable P0001 snake_case code convention.
+  -- must be validated here too, not trusted from the caller. Before this pair of checks existed,
+  -- an out-of-range size or a disallowed content type would have skipped straight to the
+  -- `documents` insert below: `documents` itself carries no upper size bound and no content-type
+  -- allow-list of its own, so any size and any content type would have silently succeeded and
+  -- written a real row — not merely surfaced as a raw Postgres error under a different code.
   if p_verified_size_bytes <= 0 or p_verified_size_bytes > 26214400 then
     raise exception using errcode = 'P0001', message = 'file_too_large';
   end if;
   if p_verified_content_type not in ('application/pdf', 'image/jpeg', 'image/png', 'image/heic', 'image/webp') then
     raise exception using errcode = 'P0001', message = 'content_type_not_allowed';
+  end if;
+
+  -- Defense-in-depth against a direct RPC call bypassing finalizeUpload's own (TS-layer)
+  -- comparison of the Storage-reported content type against the session's declared one: this RPC
+  -- is directly callable by `authenticated`, so a caller could otherwise pass any allow-listed
+  -- p_verified_content_type regardless of what was actually declared at prepare time and what
+  -- Storage actually reports. Mirrors design spec section 4/6's metadata-consistency requirement.
+  if p_verified_content_type <> v_session.declared_content_type then
+    raise exception using errcode = 'P0001', message = 'content_type_mismatch';
   end if;
 
   -- Replicates registerDocument's insert + audit shape directly in SQL, since this must run

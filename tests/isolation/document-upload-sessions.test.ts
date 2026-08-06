@@ -591,7 +591,7 @@ describe('claim_upload_session_for_finalize', () => {
 });
 
 describe('finalize_document_upload', () => {
-  it('registers the document using the VERIFIED size/content-type, not the declared ones', async () => {
+  it('registers the document using the VERIFIED size, not the declared one', async () => {
     const world = await buildOrganizationWorld({
       name: 'Notaría Finalize Verified',
       industry: 'notary',
@@ -604,7 +604,7 @@ describe('finalize_document_upload', () => {
     const { data: documentId, error } = await granted.client.rpc('finalize_document_upload', {
       p_session_id: sessionId,
       p_verified_size_bytes: 4242, // deliberately different from insertSession's declared 1000
-      p_verified_content_type: 'image/png', // deliberately different from declared 'application/pdf'
+      p_verified_content_type: 'application/pdf', // matches insertSession's declared content type
     });
 
     expect(error).toBeNull();
@@ -615,7 +615,7 @@ describe('finalize_document_upload', () => {
       .select('size_bytes, content_type')
       .eq('id', reservedDocumentId)
       .single();
-    expect(doc).toMatchObject({ size_bytes: 4242, content_type: 'image/png' });
+    expect(doc).toMatchObject({ size_bytes: 4242, content_type: 'application/pdf' });
 
     const { data: session } = await adminClient()
       .from('document_upload_sessions')
@@ -625,6 +625,32 @@ describe('finalize_document_upload', () => {
     expect(session?.status).toBe('completed');
     expect(session?.completed_document_id).toBe(reservedDocumentId);
     expect(session?.completed_at).not.toBeNull();
+  });
+
+  it('rejects a verified content type that mismatches the declared one, even though both are individually allow-listed (design spec section 4/6 metadata-consistency check)', async () => {
+    const world = await buildOrganizationWorld({
+      name: 'Notaría Finalize ContentTypeMismatch',
+      industry: 'notary',
+      clientEmail: `finalize-mismatch-${randomUUID()}@example.test`,
+    });
+    const granted = await grantVerifiedAccess({ world, permission: 'upload' });
+    const { sessionId, reservedDocumentId } = await insertSession(world); // declared 'application/pdf'
+    await granted.client.rpc('claim_upload_session_for_finalize', { p_session_id: sessionId });
+
+    const { error } = await granted.client.rpc('finalize_document_upload', {
+      p_session_id: sessionId,
+      p_verified_size_bytes: 1000,
+      p_verified_content_type: 'image/png', // deliberately different from declared 'application/pdf'
+    });
+
+    expect(error?.message).toBe('content_type_mismatch');
+
+    const { data: doc } = await adminClient()
+      .from('documents')
+      .select('id')
+      .eq('id', reservedDocumentId)
+      .maybeSingle();
+    expect(doc).toBeNull();
   });
 
   it('refuses a session that is not currently finalizing', async () => {

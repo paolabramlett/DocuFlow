@@ -352,6 +352,7 @@ const UPLOAD_SESSION_MESSAGES: Record<string, string> = {
   grant_no_longer_active: 'Tu acceso a este expediente ya no está disponible.',
   case_not_open: 'Este expediente ya no está abierto.',
   upload_already_completed: 'Esta subida ya se completó.',
+  content_type_mismatch: 'El archivo subido no coincide con lo esperado. Intenta de nuevo.',
 };
 
 function mapUploadSessionError(error: { message: string }): UseCaseError {
@@ -360,6 +361,7 @@ function mapUploadSessionError(error: { message: string }): UseCaseError {
   const reason =
     error.message === 'upload_session_not_found' ? 'not_found'
     : error.message === 'requirement_already_satisfied' ? 'conflict'
+    : error.message === 'content_type_mismatch' ? 'validation'
     : 'conflict';
   return new UseCaseError(reason, message);
 }
@@ -393,11 +395,14 @@ export async function finalizeUpload(client: DbClient, sessionId: string): Promi
   if (info.size == null || info.size <= 0 || info.size !== session.declared_size_bytes) {
     throw new UseCaseError('validation', 'El archivo subido no coincide con lo esperado. Intenta de nuevo.');
   }
+  if (!info.contentType || info.contentType !== session.declared_content_type) {
+    throw new UseCaseError('validation', 'El archivo subido no coincide con lo esperado. Intenta de nuevo.');
+  }
 
   const { data: documentId, error: finalizeError } = await client.rpc('finalize_document_upload', {
     p_session_id: sessionId,
     p_verified_size_bytes: info.size,
-    p_verified_content_type: info.contentType ?? session.declared_content_type,
+    p_verified_content_type: info.contentType,
   });
   if (finalizeError) throw mapUploadSessionError(finalizeError);
 
@@ -457,8 +462,9 @@ const documentUrlSchema = z.object({
  * underlying Requirement is still pending review or already approved (design.md: approved
  * Documents stay visible, they just become read-only).
  *
- * Ownership is checked explicitly, the same defense-in-depth style as finalizeUpload's own
- * participant check: RLS on `documents`/`storage.objects` (granted_participant_ids) would
+ * Ownership is checked explicitly, the same defense-in-depth style as prepareUpload's own
+ * participant check (`requirement.participant_id !== grant.participantId`): RLS on
+ * `documents`/`storage.objects` (granted_participant_ids) would
  * refuse a cross-participant id on its own, but this call fails with a clear, dedicated message
  * rather than a bare storage 404 if the id belongs to someone else's Requirement.
  */

@@ -11,10 +11,11 @@ describe('prepareUpload', () => {
       industry: 'notary',
       clientEmail: `prepare-happy-${randomUUID()}@example.test`,
     });
-    const granted = await grantVerifiedAccess({ world, permission: 'upload', token: 'prepare-happy-token' });
+    const token = `prepare-happy-${randomUUID()}`;
+    const granted = await grantVerifiedAccess({ world, permission: 'upload', token });
 
     const result = await prepareUpload(granted.client, {
-      token: 'prepare-happy-token',
+      token,
       requirementId: world.requirementIds[0]!,
       fileName: 'ine.pdf',
       contentType: 'application/pdf',
@@ -45,11 +46,12 @@ describe('prepareUpload', () => {
       industry: 'notary',
       clientEmail: `prepare-oversized-${randomUUID()}@example.test`,
     });
-    const granted = await grantVerifiedAccess({ world, permission: 'upload', token: 'prepare-oversized-token' });
+    const token = `prepare-oversized-${randomUUID()}`;
+    const granted = await grantVerifiedAccess({ world, permission: 'upload', token });
 
     await expect(
       prepareUpload(granted.client, {
-        token: 'prepare-oversized-token',
+        token,
         requirementId: world.requirementIds[0]!,
         fileName: 'huge.pdf',
         contentType: 'application/pdf',
@@ -70,7 +72,8 @@ describe('prepareUpload', () => {
       industry: 'notary',
       clientEmail: `prepare-wrongparticipant-a-${randomUUID()}@example.test`,
     });
-    const granted = await grantVerifiedAccess({ world, permission: 'upload', token: 'prepare-wrong-token' });
+    const token = `prepare-wrong-${randomUUID()}`;
+    const granted = await grantVerifiedAccess({ world, permission: 'upload', token });
     const other = await buildOrganizationWorld({
       name: 'Notaría Prepare Upload WrongParticipant Other',
       industry: 'notary',
@@ -79,7 +82,7 @@ describe('prepareUpload', () => {
 
     await expect(
       prepareUpload(granted.client, {
-        token: 'prepare-wrong-token',
+        token,
         requirementId: other.requirementIds[0]!, // belongs to a different Case/participant entirely
         fileName: 'ine.pdf',
         contentType: 'application/pdf',
@@ -94,12 +97,13 @@ describe('prepareUpload', () => {
       industry: 'notary',
       clientEmail: `prepare-satisfied-${randomUUID()}@example.test`,
     });
-    const granted = await grantVerifiedAccess({ world, permission: 'upload', token: 'prepare-satisfied-token' });
+    const token = `prepare-satisfied-${randomUUID()}`;
+    const granted = await grantVerifiedAccess({ world, permission: 'upload', token });
     await adminClient().from('requirements').update({ status: 'satisfied' }).eq('id', world.requirementIds[0]!);
 
     await expect(
       prepareUpload(granted.client, {
-        token: 'prepare-satisfied-token',
+        token,
         requirementId: world.requirementIds[0]!,
         fileName: 'ine.pdf',
         contentType: 'application/pdf',
