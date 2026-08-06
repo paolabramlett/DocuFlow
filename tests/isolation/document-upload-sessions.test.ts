@@ -376,7 +376,9 @@ async function insertSession(
       content_type: 'application/pdf',
       size_bytes: 1000,
     });
-    if (documentInsertError) console.error('insertSession documents fixture error', documentInsertError);
+    if (documentInsertError) {
+      throw new Error(`insertSession documents fixture error: ${documentInsertError.message}`);
+    }
   }
 
   const { data, error } = await adminClient()
@@ -400,7 +402,9 @@ async function insertSession(
     })
     .select('id, reserved_document_id')
     .single();
-  if (error) console.error('insertSession error', error);
+  if (error) {
+    throw new Error(`insertSession error: ${error.message}`);
+  }
   return { sessionId: data!.id as string, reservedDocumentId: data!.reserved_document_id as string };
 }
 
@@ -437,15 +441,14 @@ describe('claim_upload_session_for_finalize', () => {
       clientEmail: `claim-completed-${randomUUID()}@example.test`,
     });
     const granted = await grantVerifiedAccess({ world, permission: 'upload' });
-    const { sessionId, reservedDocumentId } = await insertSession(world, {
-      status: 'completed',
-      completedDocumentId: null, // set below once we know the id
-    });
-    // completed_document_id must equal reserved_document_id per the schema check constraint.
-    await adminClient()
+    const { sessionId, reservedDocumentId } = await insertSession(world, { status: 'completed' });
+
+    // Capture the row's state BEFORE calling claim again, then assert it's byte-identical after.
+    const { data: before } = await adminClient()
       .from('document_upload_sessions')
-      .update({ completed_document_id: reservedDocumentId, completed_at: new Date().toISOString() })
-      .eq('id', sessionId);
+      .select('status, claimed_at, completed_at, completed_document_id')
+      .eq('id', sessionId)
+      .single();
 
     const { data, error } = await granted.client.rpc('claim_upload_session_for_finalize', {
       p_session_id: sessionId,
@@ -453,6 +456,13 @@ describe('claim_upload_session_for_finalize', () => {
 
     expect(error).toBeNull();
     expect(data?.[0]).toMatchObject({ already_completed: true, completed_document_id: reservedDocumentId });
+
+    const { data: after } = await adminClient()
+      .from('document_upload_sessions')
+      .select('status, claimed_at, completed_at, completed_document_id')
+      .eq('id', sessionId)
+      .single();
+    expect(after).toEqual(before);
   });
 
   it('refuses a session currently finalizing within its lease', async () => {
@@ -525,7 +535,7 @@ describe('claim_upload_session_for_finalize', () => {
       clientEmail: `claim-lazyexpire-${randomUUID()}@example.test`,
     });
     const granted = await grantVerifiedAccess({ world, permission: 'upload' });
-    const { sessionId } = await insertSession(world, { expiresAt: new Date(Date.now() - 1000).toISOString() });
+    const { sessionId } = await insertSession(world, { expiresAt: new Date(Date.now() - 60_000).toISOString() });
 
     const { error } = await granted.client.rpc('claim_upload_session_for_finalize', { p_session_id: sessionId });
     expect(error?.message).toBe('upload_session_expired');
@@ -542,16 +552,39 @@ describe('claim_upload_session_for_finalize', () => {
     expect(after?.status).toBe('pending');
   });
 
-  it('a Client with no grant on this session cannot claim it — RLS hides the row entirely, so it is upload_session_not_found, not a separate not_authorized', async () => {
+  it('a Participant with a real active upload grant, but not on THIS session, cannot claim it — RLS hides the row entirely, so it is upload_session_not_found, not a separate not_authorized', async () => {
     const world = await buildOrganizationWorld({
       name: 'Notaría Claim TenantIsolation',
       industry: 'notary',
       clientEmail: `claim-tenant-${randomUUID()}@example.test`,
     });
     const { sessionId } = await insertSession(world);
-    const other = await createOrganizationWithOwner('Notaría Claim TenantOther', 'notary');
 
-    const { error } = await other.owner.client.rpc('claim_upload_session_for_finalize', { p_session_id: sessionId });
+    const otherWorld = await buildOrganizationWorld({
+      name: 'Notaría Claim TenantIsolation Other',
+      industry: 'notary',
+      clientEmail: `claim-tenant-other-${randomUUID()}@example.test`,
+    });
+    const otherGranted = await grantVerifiedAccess({ world: otherWorld, permission: 'upload' });
+
+    const { error } = await otherGranted.client.rpc('claim_upload_session_for_finalize', {
+      p_session_id: sessionId,
+    });
+    expect(error?.message).toBe('upload_session_not_found');
+  });
+
+  it('a Participant with only a view (not upload) grant on the SAME case cannot claim a session', async () => {
+    const world = await buildOrganizationWorld({
+      name: 'Notaría Claim ViewOnlyGrant',
+      industry: 'notary',
+      clientEmail: `claim-viewonly-${randomUUID()}@example.test`,
+    });
+    const { sessionId } = await insertSession(world);
+    const viewOnlyGranted = await grantVerifiedAccess({ world, permission: 'view' });
+
+    const { error } = await viewOnlyGranted.client.rpc('claim_upload_session_for_finalize', {
+      p_session_id: sessionId,
+    });
     expect(error?.message).toBe('upload_session_not_found');
   });
 });

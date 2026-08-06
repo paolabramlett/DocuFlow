@@ -37,6 +37,16 @@ begin
 
   select * into v_session from public.document_upload_sessions where id = p_session_id for update;
 
+  -- Defensive: the row was visible to the plain SELECT above, but if it were somehow deleted
+  -- between that SELECT and this FOR UPDATE, v_session would be entirely NULL and every
+  -- subsequent NULL-comparison branch below would silently evaluate false, falling through to a
+  -- false "success" (already_completed: false) instead of erroring. Narrow, currently-unreachable
+  -- race given nothing deletes these rows today, but the guard keeps this function's behavior
+  -- honest against its own documented branches.
+  if not found then
+    raise exception using errcode = 'P0001', message = 'upload_session_not_found';
+  end if;
+
   -- Deliberately the FIRST branch: a retry of an already-finished session returns its document id
   -- immediately, before anything else runs — including before finalizeUploadAction ever calls
   -- storage.info(). See design spec section 4.
