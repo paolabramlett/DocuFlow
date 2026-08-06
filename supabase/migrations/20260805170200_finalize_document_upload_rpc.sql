@@ -14,7 +14,6 @@ declare
   v_org_id uuid;
   v_session public.document_upload_sessions;
   v_requirement public.requirements;
-  v_grant_active boolean;
   v_case_state text;
 begin
   -- security definer (not invoker): as claim_upload_session_for_finalize's own comment explains,
@@ -54,21 +53,25 @@ begin
     raise exception using errcode = 'P0001', message = 'requirement_already_satisfied';
   end if;
 
-  select
-    (g.verified_at is not null and g.revoked_at is null and g.expires_at is not null
-     and g.expires_at > now() and g.permission = 'upload')
-    into v_grant_active
-  from public.case_access_grants g
-  where g.participant_id = v_session.participant_id
-  order by g.created_at desc
-  limit 1;
-  if v_grant_active is not true then
+  if v_session.participant_id not in (select app.granted_participant_ids('upload')) then
     raise exception using errcode = 'P0001', message = 'grant_no_longer_active';
   end if;
 
   select state into v_case_state from public.cases where id = v_session.case_id;
   if v_case_state <> 'open' then
     raise exception using errcode = 'P0001', message = 'case_not_open';
+  end if;
+
+  -- Defense-in-depth, mirroring create_upload_session's own exact checks (same literal values):
+  -- this RPC is directly callable by `authenticated`, so p_verified_size_bytes/p_verified_content_type
+  -- must be validated here too, not trusted from the caller. Without this, an out-of-range value
+  -- would instead hit documents' own check constraints and escape as a raw Postgres 23514 error
+  -- rather than this codebase's stable P0001 snake_case code convention.
+  if p_verified_size_bytes <= 0 or p_verified_size_bytes > 26214400 then
+    raise exception using errcode = 'P0001', message = 'file_too_large';
+  end if;
+  if p_verified_content_type not in ('application/pdf', 'image/jpeg', 'image/png', 'image/heic', 'image/webp') then
+    raise exception using errcode = 'P0001', message = 'content_type_not_allowed';
   end if;
 
   -- Replicates registerDocument's insert + audit shape directly in SQL, since this must run

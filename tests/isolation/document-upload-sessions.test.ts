@@ -796,4 +796,91 @@ describe('finalize_document_upload', () => {
     });
     expect(error?.message).toBe('upload_session_not_found');
   });
+
+  it('rejects a verified size of zero (or negative), even though the session was legitimately claimed — defense-in-depth against a direct RPC call bypassing the TS-side check', async () => {
+    const world = await buildOrganizationWorld({
+      name: 'Notaría Finalize ZeroSize',
+      industry: 'notary',
+      clientEmail: `finalize-zerosize-${randomUUID()}@example.test`,
+    });
+    const granted = await grantVerifiedAccess({ world, permission: 'upload' });
+    const { sessionId, reservedDocumentId } = await insertSession(world);
+    await granted.client.rpc('claim_upload_session_for_finalize', { p_session_id: sessionId });
+
+    const { error } = await granted.client.rpc('finalize_document_upload', {
+      p_session_id: sessionId,
+      p_verified_size_bytes: 0,
+      p_verified_content_type: 'application/pdf',
+    });
+    expect(error?.message).toBe('file_too_large');
+
+    const { count } = await adminClient()
+      .from('documents')
+      .select('*', { count: 'exact', head: true })
+      .eq('id', reservedDocumentId);
+    expect(count).toBe(0);
+  });
+
+  it('rejects a verified content type outside the real allow-list, even though the session was legitimately claimed — defense-in-depth against a direct RPC call bypassing the TS-side check', async () => {
+    const world = await buildOrganizationWorld({
+      name: 'Notaría Finalize BadContentType',
+      industry: 'notary',
+      clientEmail: `finalize-badtype-${randomUUID()}@example.test`,
+    });
+    const granted = await grantVerifiedAccess({ world, permission: 'upload' });
+    const { sessionId, reservedDocumentId } = await insertSession(world);
+    await granted.client.rpc('claim_upload_session_for_finalize', { p_session_id: sessionId });
+
+    const { error } = await granted.client.rpc('finalize_document_upload', {
+      p_session_id: sessionId,
+      p_verified_size_bytes: 1000,
+      p_verified_content_type: 'application/x-msdownload',
+    });
+    expect(error?.message).toBe('content_type_not_allowed');
+
+    const { count } = await adminClient()
+      .from('documents')
+      .select('*', { count: 'exact', head: true })
+      .eq('id', reservedDocumentId);
+    expect(count).toBe(0);
+  });
+
+  it('two concurrent finalize calls on the same claimed session: exactly one succeeds, the other is rejected cleanly (never a raw duplicate-key error)', async () => {
+    const world = await buildOrganizationWorld({
+      name: 'Notaría Finalize Concurrent',
+      industry: 'notary',
+      clientEmail: `finalize-concurrent-${randomUUID()}@example.test`,
+    });
+    const granted = await grantVerifiedAccess({ world, permission: 'upload' });
+    const { sessionId, reservedDocumentId } = await insertSession(world);
+    await granted.client.rpc('claim_upload_session_for_finalize', { p_session_id: sessionId });
+
+    const [a, b] = await Promise.all([
+      granted.client.rpc('finalize_document_upload', {
+        p_session_id: sessionId,
+        p_verified_size_bytes: 1000,
+        p_verified_content_type: 'application/pdf',
+      }),
+      granted.client.rpc('finalize_document_upload', {
+        p_session_id: sessionId,
+        p_verified_size_bytes: 1000,
+        p_verified_content_type: 'application/pdf',
+      }),
+    ]);
+
+    const successes = [a, b].filter((r) => r.error === null);
+    const failures = [a, b].filter((r) => r.error !== null);
+    expect(successes).toHaveLength(1);
+    expect(failures).toHaveLength(1);
+    // The loser must fail with the stable P0001 code, never a raw Postgres 23505 (unique violation)
+    // leaking through — proving the FOR UPDATE lock genuinely serialized the two calls rather than
+    // letting both reach the insert.
+    expect(failures[0]!.error!.message).toBe('upload_session_not_finalizing');
+
+    const { count } = await adminClient()
+      .from('documents')
+      .select('*', { count: 'exact', head: true })
+      .eq('id', reservedDocumentId);
+    expect(count).toBe(1);
+  });
 });
