@@ -15,6 +15,7 @@ declare
   v_session public.document_upload_sessions;
   v_requirement public.requirements;
   v_case_state text;
+  v_actor_grant_id uuid;
 begin
   -- security definer (not invoker): as claim_upload_session_for_finalize's own comment explains,
   -- document_upload_sessions has no update grant/policy at all for `authenticated` — only
@@ -106,12 +107,36 @@ begin
     p_verified_size_bytes, (select auth.uid())
   );
 
+  -- recordAuditEvent (the retired path's audit writer) populates actor_grant_id for every client
+  -- actor: `actor_grant_id: event.actor.kind === 'client' ? event.actor.grantId : null`. This RPC
+  -- must resolve the equivalent id itself, using the exact same active-grant predicate as
+  -- app.granted_participant_ids('upload') (verified/not revoked/not expired/upload permission),
+  -- scoped to this session's own participant_id and the caller's own auth.uid().
+  select id into v_actor_grant_id
+  from public.case_access_grants
+  where auth_user_id = (select auth.uid())
+    and participant_id = v_session.participant_id
+    and verified_at is not null
+    and revoked_at is null
+    and expires_at is not null
+    and expires_at > now()
+    and permission = 'upload'
+  limit 1;
+
+  -- The old path (registerDocument + recordAuditEvent) additionally emitted a SECOND
+  -- document.uploaded event targeting the requirement (target_type: 'requirement', metadata:
+  -- { replaced: true }). That event is deliberately NOT reproduced here: a repo-wide sweep found
+  -- no reader of a requirement-targeted document.uploaded event today, so reintroducing an event
+  -- with zero consumers was judged higher-risk (a second insert with no proven shape) than
+  -- documenting its removal here. If a future feature needs to read Requirement-scoped upload
+  -- history, it can query audit_events by (target_type = 'document', target_id) joined through
+  -- documents.requirement_id instead of relying on a second, requirement-targeted row.
   insert into public.audit_events (
     organization_id, case_id, action, target_type, target_id,
-    actor_kind, actor_auth_user_id, metadata
+    actor_kind, actor_auth_user_id, actor_grant_id, metadata
   ) values (
     v_org_id, v_session.case_id, 'document.uploaded', 'document', v_session.reserved_document_id,
-    'client', (select auth.uid()),
+    'client', (select auth.uid()), v_actor_grant_id,
     jsonb_build_object('fileName', v_session.original_file_name, 'contentType', p_verified_content_type, 'sizeBytes', p_verified_size_bytes)
   );
 
